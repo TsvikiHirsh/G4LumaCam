@@ -1,7 +1,10 @@
 #include "LumaCamMessenger.hh"
+#include "MaterialBuilder.hh"
 
-LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLogVolume, G4int batch)
- : csvFilename(filename), sampleLog(sampleLogVolume), batchSize(batch) {
+LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLogVolume, 
+                                   G4LogicalVolume* scintLogVolume, G4int batch)
+ : csvFilename(filename), sampleLog(sampleLogVolume), scintLog(scintLogVolume), batchSize(batch) {
+    matBuilder = new MaterialBuilder(); // Initialize MaterialBuilder
     messenger = new G4GenericMessenger(this, "/lumacam/", "lumacam control commands");
 
     if (csvFilename) {
@@ -18,6 +21,13 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
             .SetDefaultValue("G4_GRAPHITE");
     }
 
+    if (scintLog) {
+        messenger->DeclareMethod("scintillator", &LumaCamMessenger::SetScintillator)
+            .SetGuidance("Set the scintillator material (e.g., OPSC-100, ISC-1000)")
+            .SetParameterName("scintCode", false)
+            .SetDefaultValue("PVT"); // Default to your PVT scintillator
+    }
+
     messenger->DeclareProperty("batchSize", batchSize)
         .SetGuidance("Set the number of events per CSV file (0 for single file)")
         .SetParameterName("size", false)
@@ -26,6 +36,7 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
 
 LumaCamMessenger::~LumaCamMessenger() {
     delete messenger;
+    delete matBuilder;
 }
 
 void LumaCamMessenger::SetMaterial(const G4String& materialName) {
@@ -37,5 +48,21 @@ void LumaCamMessenger::SetMaterial(const G4String& materialName) {
         G4cout << "Sample material set to: " << materialName << G4endl;
     } else {
         G4cerr << "Material " << materialName << " not found!" << G4endl;
+    }
+}
+
+void LumaCamMessenger::SetScintillator(const G4String& scintCode) {
+    if (!scintLog) return;
+    G4Material* scintillator = nullptr;
+    if (scintCode == "PVT") {
+        scintillator = matBuilder->getPVT(); // Default PVT
+    } else {
+        scintillator = matBuilder->getScintillator(scintCode); // SSLG4 scintillator
+    }
+    if (scintillator) {
+        scintLog->SetMaterial(scintillator);
+        G4cout << "Scintillator set to: " << scintCode << G4endl;
+    } else {
+        G4cerr << "Scintillator " << scintCode << " not found!" << G4endl;
     }
 }

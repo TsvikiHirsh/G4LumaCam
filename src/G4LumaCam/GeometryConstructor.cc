@@ -11,20 +11,16 @@
 #include "G4NistManager.hh"
 #include "G4SDManager.hh"
 #include "G4SubtractionSolid.hh"
-
-// Include the messenger header
 #include "LumaCamMessenger.hh"
 
 GeometryConstructor::GeometryConstructor(ParticleGenerator* gen) 
-    : matBuilder(new MaterialBuilder()), eventProc(nullptr), sampleLog(nullptr) {
+    : matBuilder(new MaterialBuilder()), eventProc(nullptr), sampleLog(nullptr), scintLog(nullptr) {
     eventProc = new EventProcessor("EventProcessor", gen); // Pass ParticleGenerator to EventProcessor
     G4SDManager* sdManager = G4SDManager::GetSDMpointer();
     sdManager->AddNewDetector(eventProc);
-    G4String filename = "";
-    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog);
+    G4String filename = "sim_data.csv"; // Default filename
+    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog); // Initialize with both volumes
 }
-
-
 
 GeometryConstructor::~GeometryConstructor() {
     delete matBuilder;
@@ -51,7 +47,6 @@ G4VPhysicalVolume* GeometryConstructor::createWorld() {
     return worldPhys;
 }
 
-
 G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
     // Define the L-shape components
     G4Box* arm1 = new G4Box("Arm1", 10*cm, 10*cm, 30*cm); // x: -10 cm to 10 cm, z: -20 cm to 20 cm
@@ -60,7 +55,6 @@ G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
     // Union z-range: -20 cm to 20 cm (arm1 dominates lower z, arm2 extends x at higher z)
 
     // Define a cutting box to remove z < -0.5 cm
-    // Large enough in x and y to cover the L-shape, z from -infinity to -0.5 cm
     G4Box* cutBox = new G4Box("CutBox", 50*cm, 50*cm, 100*cm); // Oversized to ensure full coverage
     G4SubtractionSolid* trimmedLShape = new G4SubtractionSolid("TrimmedLShape", lShapeSolid, cutBox, 
                                                                nullptr, G4ThreeVector(0, 0, -100.5*cm)); 
@@ -84,7 +78,7 @@ G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
     G4double reflectivity[12] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     G4double efficiency[12] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                                0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+                              0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 
     blackSurfProp->AddProperty("REFLECTIVITY", PhotonEnergyPVT, reflectivity, 12);
     blackSurfProp->AddProperty("EFFICIENCY", PhotonEnergyPVT, efficiency, 12);
@@ -92,7 +86,6 @@ G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
 
     new G4LogicalSkinSurface("DarkLShape", lShapeLog, blackSurf);
 
-    
     G4VisAttributes* visAttr = new G4VisAttributes(G4Colour(0.6, 0.3, 0.1));
     visAttr->SetVisibility(true);
     visAttr->SetForceSolid(false);
@@ -106,7 +99,7 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     G4VisAttributes* scintVisAttributes = new G4VisAttributes(G4Colour(0.5, 0.5, 0.5, 0.5)); // Gray, 50% transparent
     scintVisAttributes->SetForceSolid(true);
     scintVisAttributes->SetVisibility(true);
-    G4LogicalVolume* scintLog = new G4LogicalVolume(scintSolid, matBuilder->getPVT(), "ScintLog");
+    scintLog = new G4LogicalVolume(scintSolid, matBuilder->getPVT(), "ScintLog"); // Assign to member variable
     new G4PVPlacement(nullptr, G4ThreeVector(0, 0, Sim::SCINT_THICKNESS), scintLog, "ScintPhys", lShapeLog, false, 0);
     scintLog->SetVisAttributes(scintVisAttributes);
     scintLog->SetSensitiveDetector(eventProc);
@@ -125,6 +118,11 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     surfProp->AddProperty("TRANSMITTANCE", PhotonEnergyPVT, transmittance, 12);
     scintSurf->SetMaterialPropertiesTable(surfProp);
     new G4LogicalSkinSurface("ScintSkinSurface", scintLog, scintSurf);
+
+    // Update LumaCamMessenger with both sampleLog and scintLog
+    delete lumaCamMessenger; // Delete the old instance
+    G4String filename = "sim_data.csv";
+    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog);
 
     // Black tape side boxes (unchanged)
     G4Box* black_side_box = new G4Box("black_side_box", Sim::SCINT_SIZE, Sim::COATING_THICKNESS, Sim::SCINT_THICKNESS);
@@ -178,12 +176,9 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     new G4PVPlacement(nullptr, G4ThreeVector(0, 0, -20*cm), sampleLog, "SamplePhys", lShapeLog, false, 0);
     sampleLog->SetVisAttributes(sampleVisAttributes);
 
-    // Update messenger with the sample log volume
-    if (lumaCamMessenger) {
-        delete lumaCamMessenger;
-    }
-    G4String filename = "";
-    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog);
+    // Update LumaCamMessenger again after sampleLog and scintLog are set
+    delete lumaCamMessenger;
+    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog);
 
     // Mirror
     G4Box* mirrorSolid = new G4Box("MirrorSolid", 95*mm, 65*mm, 0.5*um);

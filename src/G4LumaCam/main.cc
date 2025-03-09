@@ -10,15 +10,11 @@
 #include "QGSP_BERT_HP.hh"
 #include "G4OpticalPhysics.hh"
 #include "G4RadioactiveDecayPhysics.hh"
-
-G4String Sim::outputFileName = "sim_data.csv";
-G4int Sim::batchSize = 10000;
-std::default_random_engine Sim::randomEngine(time(nullptr));
+#include "LumaCamMessenger.hh" // Include LumaCamMessenger
 
 int main(int argc, char** argv) {
     G4RunManager* runMgr = new G4RunManager();
 
-    // Step 1: Set up the physics list first
     G4VModularPhysicsList* phys = new QGSP_BERT_HP();
     G4OpticalPhysics* optPhys = new G4OpticalPhysics();
     optPhys->Configure(kCerenkov, true);
@@ -27,9 +23,8 @@ int main(int argc, char** argv) {
     phys->RegisterPhysics(new G4RadioactiveDecayPhysics());
     runMgr->SetUserInitialization(phys);
 
-    // Step 2: Now instantiate user actions
     ParticleGenerator* gen = new ParticleGenerator();
-    GeometryConstructor* geo = new GeometryConstructor(gen); // Pass gen to GeometryConstructor
+    GeometryConstructor* geo = new GeometryConstructor(gen);
     runMgr->SetUserInitialization(geo);
 
     runMgr->SetUserAction(gen);
@@ -37,6 +32,10 @@ int main(int argc, char** argv) {
     SimulationManager* simMgr = new SimulationManager();
     runMgr->SetUserAction(simMgr);
     runMgr->SetUserAction(new SimulationManager::EventHandler(simMgr));
+
+    // Add LumaCamMessenger with scintillator logical volume
+    G4String outputFileName = "sim_data.csv";
+    LumaCamMessenger* lumaCamMessenger = new LumaCamMessenger(&outputFileName, nullptr, geo->GetScintillatorLogicalVolume(), 10000);
 
     runMgr->Initialize();
 
@@ -58,6 +57,7 @@ int main(int argc, char** argv) {
         uiMgr->ApplyCommand("/gps/energy 10 MeV");
         uiMgr->ApplyCommand("/gps/particle neutron");
         uiMgr->ApplyCommand("/lumacam/sampleMaterial G4_Galactic");
+        uiMgr->ApplyCommand("/lumacam/scintillator OPSC-100"); // Example SSLG4 scintillator
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add proton");
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add opticalphoton");
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add neutron");
@@ -72,6 +72,7 @@ int main(int argc, char** argv) {
         delete ui;
     }
 
+    delete lumaCamMessenger; // Clean up
     delete visMgr;
     delete runMgr;
     return 0;

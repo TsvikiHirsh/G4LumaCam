@@ -18,11 +18,13 @@ public:
     GeometryConstructor(ParticleGenerator* gen = nullptr); // Accept ParticleGenerator
     ~GeometryConstructor() override;
     G4VPhysicalVolume* Construct() override;
+    G4LogicalVolume* GetScintillatorLogicalVolume() const { return scintLog; } // New getter for scintillator
 
 private:
     MaterialBuilder* matBuilder;
     EventProcessor* eventProc;
     G4LogicalVolume* sampleLog;
+    G4LogicalVolume* scintLog; // New member for scintillator logical volume
     LumaCamMessenger* lumaCamMessenger;
 
     G4VPhysicalVolume* createWorld();
