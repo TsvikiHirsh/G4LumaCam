@@ -1,0 +1,9 @@
+[submodule "src/SSLG4"]
+	path = src/SSLG4
+	url = https://github.com/mkandemirr/SSLG4
+[submodule "OPSim"]
+	path = OPSim
+	url = https://github.com/mkandemirr/OPSim.git
+[submodule "src/OPSim"]
+	path = src/OPSim
+	url = https://github.com/mkandemirr/OPSim.git
