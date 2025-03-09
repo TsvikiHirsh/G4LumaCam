@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import shutil
 from setuptools import setup, find_packages
 from setuptools.command.build_py import build_py
 from setuptools.command.install import install
@@ -16,7 +17,7 @@ class BuildGeant4Simulation(build_py):
         sslg4_include_dir = os.path.join(sslg4_base_dir, "include")
         sslg4_source_dir = os.path.join(sslg4_base_dir, "src")
 
-        opsim_base_dir = os.path.abspath(os.path.join(os.getcwd(), "src", "OPSim", "OPSim"))  # Adjusted to OPSim/OPSim/
+        opsim_base_dir = os.path.abspath(os.path.join(os.getcwd(), "src", "OPSim", "OPSim"))
         opsim_include_dir = os.path.join(opsim_base_dir, "include")
         opsim_source_dir = os.path.join(opsim_base_dir, "src")
 
@@ -28,34 +29,60 @@ class BuildGeant4Simulation(build_py):
             if not os.path.exists(dir_path):
                 raise FileNotFoundError(f"{name} directory not found at {dir_path}. Please ensure submodules are initialized (git submodule update --init --recursive).")
 
-        # Configure CMake with SSLG4 and OPSim paths
+        # Configure CMake with SSLG4 and OPSim paths, set output to build/
         cmake_args = [
             "cmake",
             "../src/G4LumaCam",
             f"-DSSLG4_INCLUDE_DIR={sslg4_include_dir}",
             f"-DSSLG4_SOURCE_DIR={sslg4_source_dir}",
             f"-DOPSIM_INCLUDE_DIR={opsim_include_dir}",
-            f"-DOPSIM_SOURCE_DIR={opsim_source_dir}"
+            f"-DOPSIM_SOURCE_DIR={opsim_source_dir}",
+            f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY={build_dir}"  # Output to build/
         ]
-        subprocess.check_call(cmake_args, cwd=build_dir)
+        try:
+            subprocess.check_call(cmake_args, cwd=build_dir)
+        except subprocess.CalledProcessError as e:
+            print("CMake configuration failed. Output:")
+            subprocess.run(cmake_args, cwd=build_dir, capture_output=False)
+            raise
 
         # Build the project
-        subprocess.check_call(["cmake", "--build", "."], cwd=build_dir)
+        try:
+            subprocess.check_call(["cmake", "--build", ".", "--verbose"], cwd=build_dir)
+        except subprocess.CalledProcessError as e:
+            print("CMake build failed.")
+            raise
 
-        lumacam_executable = os.path.join(build_dir, "lib", "lumacam")  # Matches CMake output dir
+        # Check for the executable at build/lumacam
+        expected_path = os.path.join(build_dir, "lumacam")  # New expected location
         print("Build directory:", build_dir)
-        print("Looking for lumacam executable at:", lumacam_executable)
+        print("Expected lumacam path:", expected_path)
+        print("Directory contents (build/):", os.listdir(build_dir))
+        if os.path.exists(expected_path):
+            lumacam_executable = expected_path
+            print("Found lumacam at expected path.")
+        else:
+            raise FileNotFoundError("lumacam executable not found at expected path: " + expected_path)
 
-        if not os.path.exists(lumacam_executable):
-            raise FileNotFoundError("lumacam executable not found in build directory.")
-
+        # Set up the target directory and copy the executable
         bin_dir = os.path.join(self.build_lib, "G4LumaCam", "bin")
+        print("Target bin directory:", bin_dir)
         os.makedirs(bin_dir, exist_ok=True)
-        subprocess.check_call(["cp", lumacam_executable, bin_dir])
+        destination_path = os.path.join(bin_dir, "lumacam")
+        print("Copying lumacam to:", destination_path)
+        subprocess.check_call(["cp", "-f", lumacam_executable, destination_path])
+        os.chmod(destination_path, 0o755)
 
-        executable_path = os.path.join(bin_dir, "lumacam")
-        os.chmod(executable_path, 0o755)
+        # Clean up any stray lumacam file in build/lib/
+        stray_path = os.path.join(self.build_lib, "lumacam")
+        if os.path.exists(stray_path):
+            print(f"Removing stray file at {stray_path} to avoid conflict.")
+            if os.path.isfile(stray_path):
+                os.remove(stray_path)
+            elif os.path.isdir(stray_path):
+                shutil.rmtree(stray_path)
 
+        # Run the parent build_py logic
         super().run()
 
 class CustomInstall(install):
@@ -85,7 +112,7 @@ setup(
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     package_data={
-        'G4LumaCam': ['bin/*', 'config/*'],
+        'G4LumaCam': ['bin/lumacam', 'config/*'],
     },
     install_requires=[
         "rayoptics",

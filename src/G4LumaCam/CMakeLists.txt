@@ -6,10 +6,11 @@ project(lumacam)
 find_package(Geant4 10.6 REQUIRED ui_all vis_all)
 include(${Geant4_USE_FILE})
 
-# Set C++ standard to 14
+# Set C++ standard to 14 explicitly
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF) # Use -std=c++14, not -std=gnu++14
+set(CMAKE_CXX_EXTENSIONS OFF)
+add_definitions(-std=c++14)  # Fallback if CMake ignores the standard
 
 # Define your sources and headers
 set(SOURCES
@@ -20,6 +21,7 @@ set(SOURCES
     EventProcessor.cc
     SimulationManager.cc
     LumaCamMessenger.cc
+    SimConfig.cc
 )
 
 set(HEADERS
@@ -53,5 +55,5 @@ endif()
 add_executable(lumacam ${SOURCES} ${SSLG4_SOURCES} ${OPSIM_SOURCES} ${HEADERS})
 target_link_libraries(lumacam ${Geant4_LIBRARIES})
 
-# Set output directory
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+# Set output directory to build/ instead of build/lib/
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
