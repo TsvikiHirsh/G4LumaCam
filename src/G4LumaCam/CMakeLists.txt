@@ -55,5 +55,36 @@ endif()
 add_executable(lumacam ${SOURCES} ${SSLG4_SOURCES} ${OPSIM_SOURCES} ${HEADERS})
 target_link_libraries(lumacam ${Geant4_LIBRARIES})
 
-# Set output directory to build/ instead of build/lib/
+# Set output directory to build/
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+# Handle SSGL4 macros
+file(GLOB_RECURSE SSLG4_MACROS "${SSLG4_SOURCE_DIR}/../macros/*/*.mac")
+foreach(_macro ${SSLG4_MACROS})
+    get_filename_component(_macro_name ${_macro} NAME)
+    get_filename_component(_macro_dir ${_macro} DIRECTORY)
+    file(RELATIVE_PATH _relative_dir ${SSLG4_SOURCE_DIR}/../macros ${_macro_dir})
+    configure_file(
+        ${_macro}
+        ${CMAKE_BINARY_DIR}/macros/${_relative_dir}/${_macro_name}
+        COPYONLY
+    )
+endforeach()
+
+# Handle SSGL4 data files
+file(GLOB_RECURSE SSLG4_DATA "${SSLG4_SOURCE_DIR}/../data/*/*/*")
+foreach(_data ${SSLG4_DATA})
+    get_filename_component(_data_name ${_data} NAME)
+    get_filename_component(_data_dir ${_data} DIRECTORY)
+    file(RELATIVE_PATH _relative_dir ${SSLG4_SOURCE_DIR}/../data ${_data_dir})
+    configure_file(
+        ${_data}
+        ${CMAKE_BINARY_DIR}/data/${_relative_dir}/${_data_name}
+        COPYONLY
+    )
+endforeach()
+
+# Install the executable, macros, and data
+install(TARGETS lumacam DESTINATION bin)
+install(DIRECTORY ${CMAKE_BINARY_DIR}/macros/ DESTINATION macros)
+install(DIRECTORY ${CMAKE_BINARY_DIR}/data/ DESTINATION data)
