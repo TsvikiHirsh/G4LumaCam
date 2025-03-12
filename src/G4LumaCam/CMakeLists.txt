@@ -66,7 +66,7 @@ foreach(_macro ${SSLG4_MACROS})
     file(RELATIVE_PATH _relative_dir ${SSLG4_SOURCE_DIR}/../macros ${_macro_dir})
     configure_file(
         ${_macro}
-        ${CMAKE_BINARY_DIR}/macros/${_relative_dir}/${_macro_name}
+        ${CMAKE_BINARY_DIR}/sslg4/macros/${_relative_dir}/${_macro_name}
         COPYONLY
     )
 endforeach()
@@ -79,12 +79,12 @@ foreach(_data ${SSLG4_DATA})
     file(RELATIVE_PATH _relative_dir ${SSLG4_SOURCE_DIR}/../data ${_data_dir})
     configure_file(
         ${_data}
-        ${CMAKE_BINARY_DIR}/data/${_relative_dir}/${_data_name}
+        ${CMAKE_BINARY_DIR}/sslg4/data/${_relative_dir}/${_data_name}
         COPYONLY
     )
 endforeach()
 
 # Install the executable, macros, and data
 install(TARGETS lumacam DESTINATION bin)
-install(DIRECTORY ${CMAKE_BINARY_DIR}/macros/ DESTINATION macros)
-install(DIRECTORY ${CMAKE_BINARY_DIR}/data/ DESTINATION data)
+install(DIRECTORY ${CMAKE_BINARY_DIR}/sslg4/macros/ DESTINATION sslg4/macros)
+install(DIRECTORY ${CMAKE_BINARY_DIR}/sslg4/data/ DESTINATION sslg4/data)

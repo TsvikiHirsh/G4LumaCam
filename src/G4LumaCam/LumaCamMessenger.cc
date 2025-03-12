@@ -3,8 +3,9 @@
 
 LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLogVolume, 
                                    G4LogicalVolume* scintLogVolume, G4int batch)
- : csvFilename(filename), sampleLog(sampleLogVolume), scintLog(scintLogVolume), batchSize(batch) {
-    matBuilder = new MaterialBuilder(); // Initialize MaterialBuilder
+    : csvFilename(filename), sampleLog(sampleLogVolume), scintLog(scintLogVolume), 
+      batchSize(batch), scintillatorCode("PVT") { // Default to PVT
+    matBuilder = new MaterialBuilder();
     messenger = new G4GenericMessenger(this, "/lumacam/", "lumacam control commands");
 
     if (csvFilename) {
@@ -25,7 +26,7 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
         messenger->DeclareMethod("scintillator", &LumaCamMessenger::SetScintillator)
             .SetGuidance("Set the scintillator material (e.g., OPSC-100, ISC-1000)")
             .SetParameterName("scintCode", false)
-            .SetDefaultValue("PVT"); // Default to your PVT scintillator
+            .SetDefaultValue("PVT");
     }
 
     messenger->DeclareProperty("batchSize", batchSize)
@@ -53,15 +54,16 @@ void LumaCamMessenger::SetMaterial(const G4String& materialName) {
 
 void LumaCamMessenger::SetScintillator(const G4String& scintCode) {
     if (!scintLog) return;
+    scintillatorCode = scintCode; // Store the code for later use
     G4Material* scintillator = nullptr;
     if (scintCode == "PVT") {
-        scintillator = matBuilder->getPVT(); // Default PVT
+        scintillator = matBuilder->getPVT();
     } else {
-        scintillator = matBuilder->getScintillator(scintCode); // SSLG4 scintillator
+        scintillator = matBuilder->getScintillator(scintCode); // MPT off initially, set later
     }
     if (scintillator) {
         scintLog->SetMaterial(scintillator);
-        G4cout << "Scintillator set to: " << scintCode << G4endl;
+        G4cout << "Scintillator set to: " << scintCode << " (MPT will be configured post-initialization)" << G4endl;
     } else {
         G4cerr << "Scintillator " << scintCode << " not found!" << G4endl;
     }

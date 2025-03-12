@@ -66,8 +66,8 @@ class BuildGeant4Simulation(build_py):
 
         # Set up the target directory and copy the executable and macros
         bin_dir = os.path.join(self.build_lib, "G4LumaCam", "bin")
-        macros_dir = os.path.join(self.build_lib, "G4LumaCam", "macros")
-        data_dir = os.path.join(self.build_lib, "G4LumaCam", "data")
+        macros_dir = os.path.join(self.build_lib, "G4LumaCam", "sslg4", "macros")
+        data_dir = os.path.join(self.build_lib, "G4LumaCam", "sslg4", "data")
         print("Target bin directory:", bin_dir)
         print("Target macros directory:", macros_dir)
         print("Target data directory:", data_dir)
@@ -79,21 +79,21 @@ class BuildGeant4Simulation(build_py):
         subprocess.check_call(["cp", "-f", lumacam_executable, destination_path])
         os.chmod(destination_path, 0o755)
 
-        # Copy macros from build/macros to package
-        build_macros_dir = os.path.join(build_dir, "macros")
+        # Copy macros from build/sslg4/macros to package
+        build_macros_dir = os.path.join(build_dir, "sslg4", "macros")
         if os.path.exists(build_macros_dir):
             print(f"Copying macros from {build_macros_dir} to {macros_dir}")
             subprocess.check_call(["cp", "-r", f"{build_macros_dir}/.", macros_dir])
         else:
-            print("Warning: No macros found in build/macros to copy.")
+            print("Warning: No macros found in build/sslg4/macros to copy.")
 
-        # Copy data from build/data to package
-        build_data_dir = os.path.join(build_dir, "data")
+        # Copy data from build/sslg4/data to package
+        build_data_dir = os.path.join(build_dir, "sslg4", "data")
         if os.path.exists(build_data_dir):
             print(f"Copying data from {build_data_dir} to {data_dir}")
             subprocess.check_call(["cp", "-r", f"{build_data_dir}/.", data_dir])
         else:
-            print("Warning: No data found in build/data to copy.")
+            print("Warning: No data found in build/sslg4/data to copy.")
 
         # Clean up any stray lumacam file in build/lib/
         stray_path = os.path.join(self.build_lib, "lumacam")
@@ -134,7 +134,7 @@ setup(
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     package_data={
-        'G4LumaCam': ['bin/lumacam', 'macros/*/*.mac', 'data/*/*/*', 'config/*'],
+        'G4LumaCam': ['bin/lumacam', 'sslg4/macros/*/*.mac', 'sslg4/data/*/*/*', 'config/*'],
     },
     install_requires=[
         "rayoptics",

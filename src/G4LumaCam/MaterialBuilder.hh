@@ -4,7 +4,6 @@
 #include "G4Material.hh"
 #include "G4NistManager.hh"
 #include "G4MaterialPropertiesTable.hh"
-// Include SSLG4 headers
 #include "OrganicScintillatorFactory.hh"
 #include "InorganicScintillatorFactory.hh"
 
@@ -13,16 +12,16 @@ public:
     MaterialBuilder();
     G4Material* getVacuum() const { return vacuum; }
     G4Material* getAir() const { return air; }
-    G4Material* getPVT() const { return scintMaterial; } // Default scintillator
+    G4Material* getPVT() const { return scintMaterial; }
     G4Material* getGraphite() const { return sampleMaterial; }
     G4Material* getQuartz() const { return windowMaterial; }
     G4Material* getBlackMat() const { return absorberMaterial; }
-    G4Material* getScintillator(const G4String& scintCode); // New method for dynamic scintillators
+    G4Material* getScintillator(const G4String& scintCode, G4bool enableMPT = true); // Updated with MPT toggle
 
 private:
     G4Material* vacuum;
     G4Material* air;
-    G4Material* scintMaterial;      // Default PVT scintillator
+    G4Material* scintMaterial;
     G4Material* sampleMaterial;
     G4Material* windowMaterial;
     G4Material* absorberMaterial;

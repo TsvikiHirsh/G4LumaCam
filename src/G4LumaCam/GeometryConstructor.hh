@@ -10,21 +10,21 @@
 #include "G4SDManager.hh"
 
 class EventProcessor;
-class ParticleGenerator; // Forward declaration
-class LumaCamMessenger; // Forward declaration
+class ParticleGenerator;
 
 class GeometryConstructor : public G4VUserDetectorConstruction {
 public:
-    GeometryConstructor(ParticleGenerator* gen = nullptr); // Accept ParticleGenerator
+    GeometryConstructor(ParticleGenerator* gen = nullptr);
     ~GeometryConstructor() override;
     G4VPhysicalVolume* Construct() override;
-    G4LogicalVolume* GetScintillatorLogicalVolume() const { return scintLog; } // New getter for scintillator
+    G4LogicalVolume* GetScintillatorLogicalVolume() const { return scintLog; }
+    void ConfigureScintillatorMPT(); // New method to configure MPT post-initialization
 
 private:
     MaterialBuilder* matBuilder;
     EventProcessor* eventProc;
     G4LogicalVolume* sampleLog;
-    G4LogicalVolume* scintLog; // New member for scintillator logical volume
+    G4LogicalVolume* scintLog;
     LumaCamMessenger* lumaCamMessenger;
 
     G4VPhysicalVolume* createWorld();
