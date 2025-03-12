@@ -13,6 +13,7 @@
 #include "G4SubtractionSolid.hh"
 #include "LumaCamMessenger.hh"
 #include "G4UImanager.hh"
+#include "OrganicScintillatorFactory.hh"
 
 GeometryConstructor::GeometryConstructor(ParticleGenerator* gen) 
     : matBuilder(new MaterialBuilder()), eventProc(nullptr), sampleLog(nullptr), scintLog(nullptr) {
@@ -214,18 +215,25 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
 
 void GeometryConstructor::ConfigureScintillatorMPT(const G4String& scintCode) {
     if (!scintLog) return;
-    G4Material* scintillator = matBuilder->getScintillator(scintCode, false); // Get material without MPT initially
-    scintLog->SetMaterial(scintillator); // Ensure material is set
 
-    G4UImanager* ui = G4UImanager::GetUIpointer();
-    ui->ApplyCommand("/control/macroPath build/sslg4/macros");
-    ui->ApplyCommand("/ssl/type organic");
-    ui->ApplyCommand("/ssl/name " + scintCode);
-    ui->ApplyCommand("/ssl/enableMPT true");
+    // Ensure scintillator material is set with MPT enabled
+    G4Material* scintillator = nullptr;
+    if (scintCode == "PVT") {
+        scintillator = matBuilder->getPVT();
+    } else {
+        scintillator = OrganicScintillatorFactory::GetInstance()->Get(scintCode, true); // MPT on
+    }
+    if (!scintillator) {
+        G4cerr << "Failed to retrieve scintillator " << scintCode << "!" << G4endl;
+        return;
+    }
+
+    scintLog->SetMaterial(scintillator);
+    G4cout << "Scintillator material updated to: " << scintCode << G4endl;
 
     if (scintillator->GetMaterialPropertiesTable()) {
         scintillator->GetMaterialPropertiesTable()->DumpTable();
-        G4cout << "MPT configured for " << scintCode << G4endl;
+        G4cout << "MPT successfully configured for " << scintCode << G4endl;
     } else {
         G4cerr << "Warning: " << scintCode << " MPT failed to configure!" << G4endl;
     }

@@ -59,11 +59,11 @@ void LumaCamMessenger::SetScintillator(const G4String& scintCode) {
     if (scintCode == "PVT") {
         scintillator = matBuilder->getPVT();
     } else {
-        scintillator = matBuilder->getScintillator(scintCode, false); // MPT off here
+        scintillator = matBuilder->getScintillator(scintCode, false); // MPT off initially
     }
     if (scintillator) {
         scintLog->SetMaterial(scintillator);
-        G4cout << "Scintillator material set to: " << scintCode << " (MPT configured separately)" << G4endl;
+        G4cout << "Scintillator material set to: " << scintCode << " (MPT will be configured post-initialization)" << G4endl;
     } else {
         G4cerr << "Scintillator " << scintCode << " not found!" << G4endl;
     }
