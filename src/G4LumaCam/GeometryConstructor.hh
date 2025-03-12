@@ -18,7 +18,7 @@ public:
     ~GeometryConstructor() override;
     G4VPhysicalVolume* Construct() override;
     G4LogicalVolume* GetScintillatorLogicalVolume() const { return scintLog; }
-    void ConfigureScintillatorMPT(); // New method to configure MPT post-initialization
+    void ConfigureScintillatorMPT(const G4String& scintCode = "OPSC-100"); // Updated with parameter
 
 private:
     MaterialBuilder* matBuilder;

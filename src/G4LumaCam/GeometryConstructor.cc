@@ -26,7 +26,6 @@ GeometryConstructor::GeometryConstructor(ParticleGenerator* gen)
 GeometryConstructor::~GeometryConstructor() {
     delete matBuilder;
     delete lumaCamMessenger;
-    // Note: Do not delete eventProc here, as it is managed by G4SDManager
 }
 
 G4VPhysicalVolume* GeometryConstructor::Construct() {
@@ -90,7 +89,7 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     G4VisAttributes* scintVisAttributes = new G4VisAttributes(G4Colour(0.5, 0.5, 0.5, 0.5));
     scintVisAttributes->SetForceSolid(true);
     scintVisAttributes->SetVisibility(true);
-    scintLog = new G4LogicalVolume(scintSolid, matBuilder->getPVT(), "ScintLog"); // Start with PVT
+    scintLog = new G4LogicalVolume(scintSolid, matBuilder->getPVT(), "ScintLog");
     new G4PVPlacement(nullptr, G4ThreeVector(0, 0, Sim::SCINT_THICKNESS), scintLog, "ScintPhys", lShapeLog, false, 0);
     scintLog->SetVisAttributes(scintVisAttributes);
     scintLog->SetSensitiveDetector(eventProc);
@@ -213,17 +212,21 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     new G4LogicalSkinSurface("MonitorSkinSurface", monitorLog, monitorSurf);
 }
 
-void GeometryConstructor::ConfigureScintillatorMPT() {
+void GeometryConstructor::ConfigureScintillatorMPT(const G4String& scintCode) {
     if (!scintLog) return;
+    G4Material* scintillator = matBuilder->getScintillator(scintCode, false); // Get material without MPT initially
+    scintLog->SetMaterial(scintillator); // Ensure material is set
+
     G4UImanager* ui = G4UImanager::GetUIpointer();
-    ui->ApplyCommand("/control/macroPath build/sslg4/macros"); // Ensure macro path is set
+    ui->ApplyCommand("/control/macroPath build/sslg4/macros");
     ui->ApplyCommand("/ssl/type organic");
-    ui->ApplyCommand("/ssl/name opsc-100");
+    ui->ApplyCommand("/ssl/name " + scintCode);
     ui->ApplyCommand("/ssl/enableMPT true");
-    if (scintLog->GetMaterial()->GetMaterialPropertiesTable()) {
-        scintLog->GetMaterial()->GetMaterialPropertiesTable()->DumpTable();
-        G4cout << "MPT configured for OPSC-100" << G4endl;
+
+    if (scintillator->GetMaterialPropertiesTable()) {
+        scintillator->GetMaterialPropertiesTable()->DumpTable();
+        G4cout << "MPT configured for " << scintCode << G4endl;
     } else {
-        G4cerr << "Warning: OPSC-100 MPT failed to configure!" << G4endl;
+        G4cerr << "Warning: " << scintCode << " MPT failed to configure!" << G4endl;
     }
 }

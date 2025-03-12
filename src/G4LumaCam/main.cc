@@ -39,8 +39,8 @@ int main(int argc, char** argv) {
 
     runMgr->Initialize();
 
-    // Configure scintillator MPT after initialization
-    geo->ConfigureScintillatorMPT();
+    // Configure scintillator MPT once after initialization
+    geo->ConfigureScintillatorMPT("OPSC-100");
 
     G4VisManager* visMgr = new G4VisExecutive();
     visMgr->Initialize();
@@ -52,6 +52,7 @@ int main(int argc, char** argv) {
         G4UIExecutive* ui = new G4UIExecutive(argc, argv);
         uiMgr->ApplyCommand("/control/verbose 2");
         uiMgr->ApplyCommand("/run/verbose 2");
+        uiMgr->ApplyCommand("/tracking/verbose 1"); // Debug photon generation
         uiMgr->ApplyCommand("/vis/open OGL");
         uiMgr->ApplyCommand("/vis/drawVolume");
         uiMgr->ApplyCommand("/vis/scene/add/trajectories");
@@ -62,7 +63,7 @@ int main(int argc, char** argv) {
         uiMgr->ApplyCommand("/gps/energy 10 MeV");
         uiMgr->ApplyCommand("/gps/particle neutron");
         uiMgr->ApplyCommand("/lumacam/sampleMaterial G4_Galactic");
-        uiMgr->ApplyCommand("/lumacam/scintillator OPSC-100"); // Sets material, MPT already configured
+        uiMgr->ApplyCommand("/lumacam/scintillator OPSC-100"); // Only sets material, MPT already done
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add proton");
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add opticalphoton");
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add neutron");
@@ -73,6 +74,7 @@ int main(int argc, char** argv) {
         uiMgr->ApplyCommand("/vis/modeling/trajectories/drawByParticleID-0/setRGBA opticalphoton 0.8 0.2 1.0 0.3");
         uiMgr->ApplyCommand("/vis/modeling/trajectories/drawByParticleID-0/setRGBA neutron 0.0 1.0 1.0 0.6");
         uiMgr->ApplyCommand("/vis/modeling/trajectories/drawByParticleID-0/setRGBA e- 0.0 1.0 0.0 0.6");
+        // uiMgr->ApplyCommand("/run/beamOn 10"); // Run 10 events for better visibility
         ui->SessionStart();
         delete ui;
     }

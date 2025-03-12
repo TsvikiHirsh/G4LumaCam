@@ -6,7 +6,7 @@
 #include "G4Material.hh"
 #include "G4ios.hh"
 
-class MaterialBuilder; // Forward declaration
+class MaterialBuilder;
 
 class LumaCamMessenger {
 public:
@@ -16,7 +16,7 @@ public:
                      G4int batch = 10000);
     ~LumaCamMessenger();
     void SetMaterial(const G4String& materialName);
-    void SetScintillator(const G4String& scintCode); // Updated to defer MPT setup
+    void SetScintillator(const G4String& scintCode); // Only sets material, no MPT here
 
 private:
     G4String* csvFilename;
@@ -25,7 +25,7 @@ private:
     G4int batchSize;
     G4GenericMessenger* messenger;
     MaterialBuilder* matBuilder;
-    G4String scintillatorCode; // Store scintillator code for later MPT setup
+    G4String scintillatorCode; // Store for reference
 };
 
 #endif
