@@ -58,6 +58,7 @@ int main(int argc, char** argv) {
         uiMgr->ApplyCommand("/gps/particle neutron");
         uiMgr->ApplyCommand("/lumacam/sampleMaterial G4_Galactic");
         uiMgr->ApplyCommand("/lumacam/scintillator OPSC-100"); // Example SSLG4 scintillator
+        uiMgr->ApplyCommand("/control/macroPath sslg4/macros/oscnt");
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add proton");
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add opticalphoton");
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add neutron");

@@ -43,6 +43,10 @@ include_directories(${SSLG4_INCLUDE_DIR} ${OPSIM_INCLUDE_DIR})
 file(GLOB SSLG4_SOURCES "${SSLG4_SOURCE_DIR}/*.cc")
 file(GLOB OPSIM_SOURCES "${OPSIM_SOURCE_DIR}/*.cc")
 
+# After include_directories
+set(SSLG4_MACRO_DIR "${CMAKE_SOURCE_DIR}/.../SSLG4/sslg4/macros/oscnt")
+configure_file(${SSLG4_MACRO_DIR}/opsc-100.mac ${CMAKE_BINARY_DIR}/macros/opsc-100.mac COPYONLY)
+
 # Validate key headers
 if(NOT EXISTS "${SSLG4_INCLUDE_DIR}/OrganicScintillatorFactory.hh")
     message(FATAL_ERROR "OrganicScintillatorFactory.hh not found in ${SSLG4_INCLUDE_DIR}. Verify SSLG4 submodule.")
