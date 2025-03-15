@@ -12,20 +12,21 @@
 #include "G4SDManager.hh"
 #include "G4SubtractionSolid.hh"
 #include "LumaCamMessenger.hh"
+#include "G4UImanager.hh"
+#include "OrganicScintillatorFactory.hh"
 
 GeometryConstructor::GeometryConstructor(ParticleGenerator* gen) 
     : matBuilder(new MaterialBuilder()), eventProc(nullptr), sampleLog(nullptr), scintLog(nullptr) {
-    eventProc = new EventProcessor("EventProcessor", gen); // Pass ParticleGenerator to EventProcessor
+    eventProc = new EventProcessor("EventProcessor", gen);
     G4SDManager* sdManager = G4SDManager::GetSDMpointer();
     sdManager->AddNewDetector(eventProc);
-    G4String filename = "sim_data.csv"; // Default filename
-    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog); // Initialize with both volumes
+    G4String filename = "sim_data.csv";
+    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog);
 }
 
 GeometryConstructor::~GeometryConstructor() {
     delete matBuilder;
     delete lumaCamMessenger;
-    // Note: Do not delete eventProc here, as it is managed by G4SDManager
 }
 
 G4VPhysicalVolume* GeometryConstructor::Construct() {
@@ -48,38 +49,29 @@ G4VPhysicalVolume* GeometryConstructor::createWorld() {
 }
 
 G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
-    // Define the L-shape components
-    G4Box* arm1 = new G4Box("Arm1", 10*cm, 10*cm, 30*cm); // x: -10 cm to 10 cm, z: -20 cm to 20 cm
-    G4Box* arm2 = new G4Box("Arm2", 15*cm, 10*cm, 10*cm); // x: -15 cm to 15 cm, z: -10 cm to 10 cm
+    G4Box* arm1 = new G4Box("Arm1", 10*cm, 10*cm, 30*cm);
+    G4Box* arm2 = new G4Box("Arm2", 15*cm, 10*cm, 10*cm);
     G4UnionSolid* lShapeSolid = new G4UnionSolid("LShapeSolid", arm1, arm2, nullptr, G4ThreeVector(25*cm, 0, 20*cm));
-    // Union z-range: -20 cm to 20 cm (arm1 dominates lower z, arm2 extends x at higher z)
 
-    // Define a cutting box to remove z < -0.5 cm
-    G4Box* cutBox = new G4Box("CutBox", 50*cm, 50*cm, 100*cm); // Oversized to ensure full coverage
+    G4Box* cutBox = new G4Box("CutBox", 50*cm, 50*cm, 100*cm);
     G4SubtractionSolid* trimmedLShape = new G4SubtractionSolid("TrimmedLShape", lShapeSolid, cutBox, 
-                                                               nullptr, G4ThreeVector(0, 0, -100.5*cm)); 
-    // CutBox centered at z = -100.5 cm, so top edge is at z = -0.5 cm
+                                                               nullptr, G4ThreeVector(0, 0, -100.5*cm));
 
-    // Create logical volume
     G4LogicalVolume* lShapeLog = new G4LogicalVolume(trimmedLShape, matBuilder->getAir(), "LShapeLog");
 
-    // Position the L-shape (no shift needed since trimming defines the base)
     new G4PVPlacement(nullptr, G4ThreeVector(), lShapeLog, "LShapePhys", worldLog, false, 0);
     G4OpticalSurface* blackSurf = new G4OpticalSurface("DarkSurface");
-    blackSurf->SetType(dielectric_metal);  // Metal-like surface for absorption
-    blackSurf->SetFinish(ground);  // Rough surface to scatter/absorb
-    blackSurf->SetModel(unified);  
+    blackSurf->SetType(dielectric_metal);
+    blackSurf->SetFinish(ground);
+    blackSurf->SetModel(unified);
 
-    // Create a material properties table with zero reflectivity and zero transmission
     G4MaterialPropertiesTable* blackSurfProp = new G4MaterialPropertiesTable();
-
     G4double PhotonEnergyPVT[12] = {2.08*eV, 2.38*eV, 2.58*eV, 2.7*eV, 2.76*eV, 2.82*eV,
                                     2.92*eV, 2.95*eV, 3.02*eV, 3.1*eV, 3.26*eV, 3.44*eV};
     G4double reflectivity[12] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     G4double efficiency[12] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                               0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-
     blackSurfProp->AddProperty("REFLECTIVITY", PhotonEnergyPVT, reflectivity, 12);
     blackSurfProp->AddProperty("EFFICIENCY", PhotonEnergyPVT, efficiency, 12);
     blackSurf->SetMaterialPropertiesTable(blackSurfProp);
@@ -94,17 +86,15 @@ G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
 }
 
 void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
-    // Scintillator
     G4Box* scintSolid = new G4Box("ScintSolid", Sim::SCINT_SIZE, Sim::SCINT_SIZE, Sim::SCINT_THICKNESS);
-    G4VisAttributes* scintVisAttributes = new G4VisAttributes(G4Colour(0.5, 0.5, 0.5, 0.5)); // Gray, 50% transparent
+    G4VisAttributes* scintVisAttributes = new G4VisAttributes(G4Colour(0.5, 0.5, 0.5, 0.5));
     scintVisAttributes->SetForceSolid(true);
     scintVisAttributes->SetVisibility(true);
-    scintLog = new G4LogicalVolume(scintSolid, matBuilder->getPVT(), "ScintLog"); // Assign to member variable
+    scintLog = new G4LogicalVolume(scintSolid, matBuilder->getPVT(), "ScintLog");
     new G4PVPlacement(nullptr, G4ThreeVector(0, 0, Sim::SCINT_THICKNESS), scintLog, "ScintPhys", lShapeLog, false, 0);
     scintLog->SetVisAttributes(scintVisAttributes);
     scintLog->SetSensitiveDetector(eventProc);
 
-    // Scintillator Optical Surface (unchanged)
     G4OpticalSurface* scintSurf = new G4OpticalSurface("ScintSurface");
     scintSurf->SetType(dielectric_dielectric);
     scintSurf->SetFinish(polished);
@@ -119,12 +109,10 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     scintSurf->SetMaterialPropertiesTable(surfProp);
     new G4LogicalSkinSurface("ScintSkinSurface", scintLog, scintSurf);
 
-    // Update LumaCamMessenger with both sampleLog and scintLog
-    delete lumaCamMessenger; // Delete the old instance
+    delete lumaCamMessenger;
     G4String filename = "sim_data.csv";
     lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog);
 
-    // Black tape side boxes (unchanged)
     G4Box* black_side_box = new G4Box("black_side_box", Sim::SCINT_SIZE, Sim::COATING_THICKNESS, Sim::SCINT_THICKNESS);
     G4LogicalVolume* black_side_log = new G4LogicalVolume(black_side_box, matBuilder->getVacuum(), "black_side_log");
     black_side_log->SetVisAttributes(new G4VisAttributes(G4Colour(0.1, 0.1, 0.1)));
@@ -167,23 +155,20 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     new G4LogicalSkinSurface("black_side_right_surf", black_side_log, blackTapeSurf);
     new G4LogicalSkinSurface("black_back_surf", black_back_log, blackTapeSurf);
 
-    // Sample
     G4Box* sampleSolid = new G4Box("SampleSolid", Sim::SCINT_SIZE, Sim::SCINT_SIZE, Sim::SAMPLE_THICKNESS);
     sampleLog = new G4LogicalVolume(sampleSolid, matBuilder->getGraphite(), "SampleLog");
-    G4VisAttributes* sampleVisAttributes = new G4VisAttributes(G4Colour(0.8, 0.2, 0.2, 0.5)); // Reddish, 50% transparent
+    G4VisAttributes* sampleVisAttributes = new G4VisAttributes(G4Colour(0.8, 0.2, 0.2, 0.5));
     sampleVisAttributes->SetForceSolid(true);
     sampleVisAttributes->SetVisibility(true);
     new G4PVPlacement(nullptr, G4ThreeVector(0, 0, -20*cm), sampleLog, "SamplePhys", lShapeLog, false, 0);
     sampleLog->SetVisAttributes(sampleVisAttributes);
 
-    // Update LumaCamMessenger again after sampleLog and scintLog are set
     delete lumaCamMessenger;
     lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog);
 
-    // Mirror
     G4Box* mirrorSolid = new G4Box("MirrorSolid", 95*mm, 65*mm, 0.5*um);
     G4LogicalVolume* mirrorLog = new G4LogicalVolume(mirrorSolid, matBuilder->getQuartz(), "MirrorLog");
-    G4VisAttributes* mirrorVisAttributes = new G4VisAttributes(G4Colour(0.5, 0.5, 0.5, 0.5)); // Silver, 50% transparent
+    G4VisAttributes* mirrorVisAttributes = new G4VisAttributes(G4Colour(0.5, 0.5, 0.5, 0.5));
     mirrorVisAttributes->SetForceSolid(true);
     mirrorVisAttributes->SetVisibility(true);
     G4RotationMatrix* rot = new G4RotationMatrix();
@@ -197,10 +182,9 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     new G4LogicalSkinSurface("MirrorSkin", mirrorLog, mirrorSurf);
     mirrorLog->SetVisAttributes(mirrorVisAttributes);
 
-    // Sensor
     G4Box* sensorSolid = new G4Box("SensorSolid", 10*mm, 10*mm, 0.5*um);
     G4LogicalVolume* sensorLog = new G4LogicalVolume(sensorSolid, matBuilder->getAir(), "SensorLog");
-    G4VisAttributes* sensorVisAttributes = new G4VisAttributes(G4Colour(1.0, 0.0, 0.0, 0.5)); // Red, 50% transparent
+    G4VisAttributes* sensorVisAttributes = new G4VisAttributes(G4Colour(1.0, 0.0, 0.0, 0.5));
     sensorVisAttributes->SetForceSolid(true);
     sensorVisAttributes->SetVisibility(true);
     rot = new G4RotationMatrix();
@@ -209,10 +193,9 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     sensorLog->SetVisAttributes(sensorVisAttributes);
     sensorLog->SetSensitiveDetector(eventProc);
 
-    // Monitor - Fully Transmissive
     G4Box* monitorSolid = new G4Box("MonitorSolid", Sim::SCINT_SIZE, Sim::SCINT_SIZE, 0.5*um);
     G4LogicalVolume* monitorLog = new G4LogicalVolume(monitorSolid, matBuilder->getAir(), "MonitorLog");
-    G4VisAttributes* monitorVisAttributes = new G4VisAttributes(G4Colour(1.0, 0.0, 0.0, 0.5)); // Red, 50% transparent
+    G4VisAttributes* monitorVisAttributes = new G4VisAttributes(G4Colour(1.0, 0.0, 0.0, 0.5));
     monitorVisAttributes->SetForceSolid(true);
     monitorVisAttributes->SetVisibility(true);
     new G4PVPlacement(nullptr, G4ThreeVector(0, 0, Sim::SCINT_THICKNESS*2 + 0.5*um), monitorLog, "MonitorPhys", lShapeLog, false, 0);
@@ -228,4 +211,30 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     monitorSurfProp->AddProperty("REFLECTIVITY", PhotonEnergyPVT, reflectivity, 12);
     monitorSurf->SetMaterialPropertiesTable(monitorSurfProp);
     new G4LogicalSkinSurface("MonitorSkinSurface", monitorLog, monitorSurf);
+}
+
+void GeometryConstructor::ConfigureScintillatorMPT(const G4String& scintCode) {
+    if (!scintLog) return;
+
+    // Ensure scintillator material is set with MPT enabled
+    G4Material* scintillator = nullptr;
+    if (scintCode == "PVT") {
+        scintillator = matBuilder->getPVT();
+    } else {
+        scintillator = OrganicScintillatorFactory::GetInstance()->Get(scintCode, true); // MPT on
+    }
+    if (!scintillator) {
+        G4cerr << "Failed to retrieve scintillator " << scintCode << "!" << G4endl;
+        return;
+    }
+
+    scintLog->SetMaterial(scintillator);
+    G4cout << "Scintillator material updated to: " << scintCode << G4endl;
+
+    if (scintillator->GetMaterialPropertiesTable()) {
+        scintillator->GetMaterialPropertiesTable()->DumpTable();
+        G4cout << "MPT successfully configured for " << scintCode << G4endl;
+    } else {
+        G4cerr << "Warning: " << scintCode << " MPT failed to configure!" << G4endl;
+    }
 }

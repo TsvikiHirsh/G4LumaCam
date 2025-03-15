@@ -6,14 +6,12 @@
 MaterialBuilder::MaterialBuilder() {
     G4NistManager* nist = G4NistManager::Instance();
     
-    // Elements
     G4Element* H = new G4Element("H", "H", 1., 1.01 * g/mole);
     G4Element* C = new G4Element("C", "C", 6., 12.01 * g/mole);
     G4Element* N = new G4Element("N", "N", 7., 14.01 * g/mole);
     G4Element* O = new G4Element("O", "O", 8., 16.00 * g/mole);
     G4Element* Si = new G4Element("Si", "Si", 14., 28.09 * g/mole);
     
-    // Vacuum, Air, Graphite, Quartz, Absorber
     vacuum = new G4Material("Vacuum", 1., 1.01 * g/mole, CLHEP::universe_mean_density,
         kStateGas, 2.73 * kelvin, 3.e-18 * pascal);
     
@@ -43,7 +41,6 @@ MaterialBuilder::MaterialBuilder() {
     G4double blackAbs[2] = {0.0 * mm, 0.0 * mm};
     setupMaterialProperties(absorberMaterial, blackEnergy, blackRIndex, blackAbs, 2);
 
-    // Default scintillator (PVT) - unchanged
     scintMaterial = new G4Material("Scintillator", 1.023 * g/cm3, 2);
     scintMaterial->AddElement(C, 9);
     scintMaterial->AddElement(H, 10);
@@ -60,28 +57,22 @@ MaterialBuilder::MaterialBuilder() {
     scintMaterial->GetIonisation()->SetBirksConstant(0.126 * mm/MeV);
 }
 
-// New method to get SSLG4 scintillators
-G4Material* MaterialBuilder::getScintillator(const G4String& scintCode) {
-    G4bool isMPTOn = true; // Enable MaterialPropertiesTable
+G4Material* MaterialBuilder::getScintillator(const G4String& scintCode, G4bool enableMPT) {
     G4Material* scintillator = nullptr;
 
-    // Check if it's an organic scintillator (e.g., OPSC-100)
     if (scintCode.substr(0, 4) == "OPSC") {
-        scintillator = OrganicScintillatorFactory::GetInstance()->Get(scintCode, isMPTOn);
-    }
-    // Check if it's an inorganic scintillator (e.g., ISC-1000)
-    else if (scintCode.substr(0, 3) == "ISC") {
-        scintillator = InorganicScintillatorFactory::GetInstance()->Get(scintCode, isMPTOn);
+        scintillator = OrganicScintillatorFactory::GetInstance()->Get(scintCode, enableMPT);
+    } else if (scintCode.substr(0, 3) == "ISC") {
+        scintillator = InorganicScintillatorFactory::GetInstance()->Get(scintCode, enableMPT);
     }
 
     if (!scintillator) {
-        G4cerr << "Scintillator " << scintCode << " not found in SSLG4 library!" << G4endl;
-        return scintMaterial; // Fallback to default PVT
+        G4cerr << "Scintillator " << scintCode << " not found in SSLG4 library! Using PVT." << G4endl;
+        scintillator = getPVT();
     }
     return scintillator;
 }
 
-// setupMaterialProperties remains unchanged
 void MaterialBuilder::setupMaterialProperties(G4Material* mat, const G4double* energies,
     const G4double* rindex, const G4double* abslength, int nEntries, const G4double* scintillation) {
     std::vector<G4double> energiesCopy(energies, energies + nEntries);

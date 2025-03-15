@@ -10,7 +10,7 @@
 #include "QGSP_BERT_HP.hh"
 #include "G4OpticalPhysics.hh"
 #include "G4RadioactiveDecayPhysics.hh"
-#include "LumaCamMessenger.hh" // Include LumaCamMessenger
+#include "LumaCamMessenger.hh"
 
 int main(int argc, char** argv) {
     G4RunManager* runMgr = new G4RunManager();
@@ -33,11 +33,14 @@ int main(int argc, char** argv) {
     runMgr->SetUserAction(simMgr);
     runMgr->SetUserAction(new SimulationManager::EventHandler(simMgr));
 
-    // Add LumaCamMessenger with scintillator logical volume
     G4String outputFileName = "sim_data.csv";
-    LumaCamMessenger* lumaCamMessenger = new LumaCamMessenger(&outputFileName, nullptr, geo->GetScintillatorLogicalVolume(), 10000);
+    LumaCamMessenger* lumaCamMessenger = new LumaCamMessenger(&outputFileName, nullptr, 
+                                                             geo->GetScintillatorLogicalVolume(), 10000);
 
     runMgr->Initialize();
+
+    // Configure scintillator MPT after initialization
+    geo->ConfigureScintillatorMPT("OPSC-100");
 
     G4VisManager* visMgr = new G4VisExecutive();
     visMgr->Initialize();
@@ -47,6 +50,9 @@ int main(int argc, char** argv) {
         uiMgr->ApplyCommand("/control/execute " + G4String(argv[1]));
     } else {
         G4UIExecutive* ui = new G4UIExecutive(argc, argv);
+        uiMgr->ApplyCommand("/control/verbose 2");
+        uiMgr->ApplyCommand("/run/verbose 2");
+        uiMgr->ApplyCommand("/tracking/verbose 1");
         uiMgr->ApplyCommand("/vis/open OGL");
         uiMgr->ApplyCommand("/vis/drawVolume");
         uiMgr->ApplyCommand("/vis/scene/add/trajectories");
@@ -69,11 +75,12 @@ int main(int argc, char** argv) {
         uiMgr->ApplyCommand("/vis/modeling/trajectories/drawByParticleID-0/setRGBA opticalphoton 0.8 0.2 1.0 0.3");
         uiMgr->ApplyCommand("/vis/modeling/trajectories/drawByParticleID-0/setRGBA neutron 0.0 1.0 1.0 0.6");
         uiMgr->ApplyCommand("/vis/modeling/trajectories/drawByParticleID-0/setRGBA e- 0.0 1.0 0.0 0.6");
+        uiMgr->ApplyCommand("/run/beamOn 10");
         ui->SessionStart();
         delete ui;
     }
 
-    delete lumaCamMessenger; // Clean up
+    delete lumaCamMessenger;
     delete visMgr;
     delete runMgr;
     return 0;
