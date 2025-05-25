@@ -13,3 +13,5 @@ notebooks/simulation_vs_experiment_PTB(2).ipynb
 notebooks/test.json
 src/SSLG4
 notebooks/tutorial_archive/neutrons/AnalysedResults/event_by_event/.ipynb_checkpoints
+notebooks/epithermal_with_lumacam.ipynb
+notebooks/tutorial_archive
