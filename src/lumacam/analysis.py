@@ -13,6 +13,7 @@ from multiprocessing import Pool
 import glob
 import shutil
 import subprocess
+from functools import partial
 
 
 class VerbosityLevel(IntEnum):
@@ -337,9 +338,19 @@ class Analysis:
             self.executables[attr_name] = file_path
             setattr(self, attr_name, file_path)
 
-    def _process_single_file(self, file, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
+    def _process_single_file(self, 
+                            file, 
+                            verbosity: VerbosityLevel = VerbosityLevel.QUIET,
+                            events_per_frame: int = None,
+                            frame_time_s: float = None):
         """
         Processes a single traced photon file and runs the empir_import_photons script.
+        
+        Args:
+            file: Path to the input CSV file
+            verbosity: Level of output verbosity
+            events_per_frame: Number of neutron events per frame for time delay (optional)
+            frame_time_s: Time delay between frames in seconds (optional)
         """
         try:
             df = pd.read_csv(file)
@@ -348,14 +359,18 @@ class Analysis:
                     print(f"⚠️ Skipping empty file: {file.name}")
                 return
             
-            df = df[["x2", "y2", "toa2"]].dropna()
-            df["toa2"] *= 1e-9
-            df["px"] = (df["x2"] + 10) / 10 * 128  # convert between px and mm
-            df["py"] = (df["y2"] + 10) / 10 * 128  # convert between px and mm
-            df = df[["px", "py", "toa2"]]
-            df.columns = ["x [px]", "y [px]", "t [s]"]
-            df["t_relToExtTrigger [s]"] = df["t [s]"]
-            df = df.loc[(df["t [s]"] >= 0) & (df["t [s]"] < 1)]
+            processed_df = self._process_photon_dataframe(
+                df=df,
+                file_stem=file.stem,
+                events_per_frame=events_per_frame,
+                frame_time_s=frame_time_s,
+                verbosity=verbosity
+            )
+            
+            if processed_df.empty:
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"⚠️ No valid data after processing {file.name}")
+                return
 
             # Create ImportedPhotons directory if it doesn't exist
             imported_photons_dir = self.archive / "ImportedPhotons"
@@ -363,21 +378,37 @@ class Analysis:
 
             # Save to ImportedPhotons directory
             output_csv = imported_photons_dir / f"imported_{file.stem}.csv"
-            df.sort_values("t [s]").to_csv(output_csv, index=False)
+            processed_df.sort_values("t [s]").to_csv(output_csv, index=False)
 
             # Output empirphot file
             empir_file = self.photon_files_dir / f"{file.stem}.empirphot"
-            os.system(f"{self.empir_import_photons} {output_csv} {empir_file} csv")
-            if verbosity >= VerbosityLevel.BASIC:
-                print(f"✔ Processed {file.name} → {empir_file.name}")
+            result = os.system(f"{self.empir_import_photons} {output_csv} {empir_file} csv")
+            if result == 0:
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"✔ Processed {file.name} → {empir_file.name}")
+            else:
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"❌ empir_import_photons failed for {file.name}")
 
         except Exception as e:
             if verbosity >= VerbosityLevel.BASIC: 
                 print(f"❌ Error processing {file.name}: {e}")
 
-    def _run_import_photons(self, parallel=True,verbosity: VerbosityLevel = VerbosityLevel.QUIET):
+    from functools import partial
+
+    def _run_import_photons(self, 
+                            parallel=True,
+                            verbosity: VerbosityLevel = VerbosityLevel.QUIET,
+                            events_per_frame: int = None,
+                            frame_time_s: float = None):
         """
         Runs empir_import_photons for all traced photon files.
+        
+        Args:
+            parallel: Whether to process files in parallel
+            verbosity: Level of output verbosity
+            events_per_frame: Number of neutron events per frame for time delay (optional)
+            frame_time_s: Time delay between frames in seconds (optional)
         """
         traced_files = sorted(self.traced_dir.glob("traced_sim_data_*.csv"))
         if verbosity >= VerbosityLevel.BASIC:
@@ -385,11 +416,20 @@ class Analysis:
 
         if parallel:
             with Pool() as pool:
-                list(tqdm(pool.imap_unordered(self._process_single_file, traced_files), 
-                          total=len(traced_files), desc="Processing files"))
+                list(tqdm(
+                    pool.imap_unordered(
+                        partial(self._process_single_file, 
+                                verbosity=verbosity, 
+                                events_per_frame=events_per_frame, 
+                                frame_time_s=frame_time_s),
+                        traced_files
+                    ),
+                    total=len(traced_files),
+                    desc="Processing files"
+                ))
         else:
             for file in tqdm(traced_files, desc="Processing files"):
-                self._process_single_file(file,verbosity=verbosity)
+                self._process_single_file(file, verbosity, events_per_frame, frame_time_s)
         if verbosity >= VerbosityLevel.BASIC:
             print("✅ Finished processing all files!")
 
@@ -496,6 +536,98 @@ class Analysis:
         binned_data = pd.read_csv(archive/"binned.empirevent",header=0)
         return binned_data
 
+    def _process_photon_dataframe(self, 
+                                df: pd.DataFrame, 
+                                file_stem: str = None,
+                                events_per_frame: int = None,
+                                frame_time_s: float = None,
+                                verbosity: VerbosityLevel = VerbosityLevel.QUIET) -> pd.DataFrame:
+        """
+        Processes a photon DataFrame, applying coordinate conversions and frame-based time offsets.
+        
+        Args:
+            df: Input DataFrame with columns ['x2', 'y2', 'toa2']
+            file_stem: Stem of the file for naming (optional, for saving)
+            events_per_frame: Number of neutron events per frame for time delay (optional)
+            frame_time_s: Time delay between frames in seconds (optional)
+            verbosity: Level of output verbosity
+        
+        Returns:
+            Processed DataFrame with columns ['x [px]', 'y [px]', 't [s]', 't_relToExtTrigger [s]']
+        """
+        try:
+            initial_rows = len(df)
+            df = df[["x2", "y2", "toa2"]].dropna().copy()
+            if verbosity >= VerbosityLevel.DETAILED and len(df) < initial_rows:
+                print(f"Dropped {initial_rows - len(df)} rows with NaN values")
+
+            if df.empty:
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"⚠️ Empty DataFrame after cleaning")
+                return df
+
+            df["toa2"] *= 1e-9  # Convert to seconds
+            df["px"] = (df["x2"] + 10) / 10 * 128  # Convert between px and mm
+            df["py"] = (df["y2"] + 10) / 10 * 128  # Convert between px and mm
+            df = df[["px", "py", "toa2"]]
+            df.columns = ["x [px]", "y [px]", "t [s]"]
+            df["t_relToExtTrigger [s]"] = df["t [s]"]  # Store original TOF
+            
+            # Apply frame-based time offsets if specified
+            if events_per_frame is not None and frame_time_s is not None:
+                if events_per_frame <= 0:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"⚠️ Invalid events_per_frame ({events_per_frame}). Skipping frame-based time offsets.")
+                    events_per_frame = None
+                elif frame_time_s < 0:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"⚠️ Invalid frame_time_s ({frame_time_s}). Skipping frame-based time offsets.")
+                    frame_time_s = None
+                else:
+                    # Check if neutron_id is available
+                    if 'neutron_id' not in self.sim_data.columns:
+                        if verbosity >= VerbosityLevel.BASIC:
+                            print(f"⚠️ neutron_id not found in sim_data. Assigning arbitrary neutron IDs")
+                        # Fallback: Estimate neutron events based on photon count
+                        avg_photons_per_event = 10
+                        total_events = max(1, len(df) // avg_photons_per_event)
+                        events_per_group = min(total_events, events_per_frame)
+                        if events_per_group == 0:
+                            events_per_group = 1
+                        df['neutron_id'] = (df.index * events_per_group // len(df)).astype(int)
+                    else:
+                        # Validate sim_data alignment
+                        if len(self.sim_data) < len(df):
+                            if verbosity >= VerbosityLevel.BASIC:
+                                print(f"⚠️ sim_data has fewer rows ({len(self.sim_data)}) than df ({len(df)}). Truncating.")
+                            df = df.iloc[:len(self.sim_data)].copy()
+                            df['neutron_id'] = self.sim_data['neutron_id'].iloc[:len(df)].values
+                        else:
+                            df['neutron_id'] = self.sim_data['neutron_id'].iloc[:len(df)].values
+                    
+                    # Group neutron_ids into frames efficiently
+                    neutron_ids = df['neutron_id'].values
+                    unique_neutron_ids, indices = np.unique(neutron_ids, return_index=True)
+                    sorted_indices = np.argsort(indices)
+                    unique_neutron_ids = unique_neutron_ids[sorted_indices]
+                    neutron_to_frame = {nid: i // events_per_frame for i, nid in enumerate(unique_neutron_ids)}
+                    df['frame'] = df['neutron_id'].map(neutron_to_frame)
+                    df['t [s]'] = df['t [s]'] + df['frame'] * frame_time_s
+                    df = df.drop(columns=['neutron_id', 'frame'])  # Remove temporary columns
+            
+            # Filter rows based on time
+            initial_rows = len(df)
+            df = df.loc[(df["t [s]"] >= 0) & (df["t [s]"] < 1)]
+            if verbosity >= VerbosityLevel.DETAILED and len(df) < initial_rows:
+                print(f"Dropped {initial_rows - len(df)} rows due to time filter (t [s] < 0 or >= 1)")
+
+            return df
+        
+        except Exception as e:
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"❌ Error processing DataFrame: {e}")
+            return pd.DataFrame()
+
     def process_data(self, 
                     dSpace_px: float = 4.0,
                     dTime_s: float = 50e-9,
@@ -506,7 +638,10 @@ class Analysis:
                     binning_time_resolution: float = 1.5625e-9,
                     binning_offset: float = 0.0,
                     verbosity: VerbosityLevel = VerbosityLevel.QUIET,
-                    suffix: str = "") -> pd.DataFrame:
+                    suffix: str = "",
+                    events_per_frame: int = None,
+                    frame_time_s: float = None,
+                    save_to_imported_photons: bool = False) -> pd.DataFrame:
         """
         Streamlined method to process data through the complete analysis pipeline.
         
@@ -521,6 +656,9 @@ class Analysis:
             binning_offset: Time offset for binning in seconds
             verbosity: Level of output verbosity
             suffix: Optional suffix for output folder and files (e.g., "_test" creates "AnalysedResults/test")
+            events_per_frame: Number of neutron events per frame for time delay (optional)
+            frame_time_s: Time delay between frames in seconds (optional)
+            save_to_imported_photons: If True, save photon data to ImportedPhotons directly
             
         Returns:
             DataFrame with processed data including stacks, counts, and error
@@ -537,8 +675,75 @@ class Analysis:
         suffix_dir = analysed_dir / (suffix.strip("_") if suffix else "default")
         suffix_dir.mkdir(parents=True, exist_ok=True)
         
-        # Run the import photons step
-        self._run_import_photons(verbosity=verbosity)
+        if save_to_imported_photons:
+            if verbosity >= VerbosityLevel.BASIC:
+                print("Processing and saving photon data to ImportedPhotons...")
+            
+            # Load traced photon files if self.data is empty or not suitable
+            if self.data is None or self.data.empty or not all(col in self.data.columns for col in ["x2", "y2", "toa2"]):
+                traced_files = sorted(self.traced_dir.glob("traced_sim_data_*.csv"))
+                if not traced_files:
+                    raise FileNotFoundError(f"No traced simulation data found in {self.traced_dir}")
+                
+                for file in tqdm(traced_files, desc="Processing traced files", disable=(verbosity < VerbosityLevel.BASIC)):
+                    df = pd.read_csv(file)
+                    if df.empty:
+                        if verbosity >= VerbosityLevel.BASIC:
+                            print(f"⚠️ Skipping empty file: {file.name}")
+                        continue
+                    
+                    processed_df = self._process_photon_dataframe(
+                        df=df,
+                        file_stem=file.stem,
+                        events_per_frame=events_per_frame,
+                        frame_time_s=frame_time_s,
+                        verbosity=verbosity
+                    )
+                    
+                    if not processed_df.empty:
+                        output_csv = imported_photons_dir / f"imported_{file.stem}.csv"
+                        processed_df.sort_values("t [s]").to_csv(output_csv, index=False)
+                        if verbosity >= VerbosityLevel.BASIC:
+                            print(f"Saved photon data to {output_csv}")
+                        
+                        # Run empir_import_photons
+                        empir_file = self.photon_files_dir / f"{file.stem}.empirphot"
+                        result = os.system(f"{self.empir_import_photons} {output_csv} {empir_file} csv")
+                        if result == 0 and verbosity >= VerbosityLevel.BASIC:
+                            print(f"✔ Generated {empir_file.name}")
+                        elif result != 0 and verbosity >= VerbosityLevel.BASIC:
+                            print(f"❌ empir_import_photons failed for {file.name}")
+            else:
+                # Process self.data directly
+                processed_df = self._process_photon_dataframe(
+                    df=self.data,
+                    file_stem="combined_data",
+                    events_per_frame=events_per_frame,
+                    frame_time_s=frame_time_s,
+                    verbosity=verbosity
+                )
+                
+                if not processed_df.empty:
+                    output_csv = imported_photons_dir / "imported_combined_data.csv"
+                    processed_df.sort_values("t [s]").to_csv(output_csv, index=False)
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"Saved photon data to {output_csv}")
+                    
+                    # Run empir_import_photons
+                    empir_file = self.photon_files_dir / "combined_data.empirphot"
+                    result = os.system(f"{self.empir_import_photons} {output_csv} {empir_file} csv")
+                    if result == 0 and verbosity >= VerbosityLevel.BASIC:
+                        print(f"✔ Generated {empir_file.name}")
+                    elif result != 0 and verbosity >= VerbosityLevel.BASIC:
+                        print(f"❌ empir_import_photons failed for combined_data")
+        else:
+            # Run the import photons step as before
+            self._run_import_photons(
+                parallel=True,
+                verbosity=verbosity,
+                events_per_frame=events_per_frame,
+                frame_time_s=frame_time_s
+            )
         
         # Setup photon2event config
         p2e_config = self.Photon2EventConfig()
