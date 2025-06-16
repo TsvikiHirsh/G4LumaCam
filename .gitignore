@@ -16,3 +16,8 @@ notebooks/tutorial_archive/neutrons/AnalysedResults/event_by_event/.ipynb_checkp
 notebooks/tutorial_archive/*
 notebooks/epithermal_with_lumacam.ipynb
 notebooks/tutorial_archive/*
+notebooks/tutorial_archive/neutrons/binned.empirevent
+notebooks/tutorial_archive/neutrons/binned.empirevent
+notebooks/tutorial_archive/neutrons/AnalysedResults/default/counts.csv
+notebooks/tutorial_archive/neutrons/AnalysedResults/event_by_event/merged_all_batches_results.csv
+notebooks/tutorial_archive/neutrons/TracedPhotons/traced_sim_data_0.csv
