@@ -650,18 +650,14 @@ class Analysis:
                                     time_norm_ns: float = 1.0,
                                     spatial_norm_px: float = 1.0,
                                     fov: float = 120.0,
-                                    focus_factor: float = 1.2) -> pd.DataFrame:
+                                    focus_factor: float = 1.2,
+                                    method: str = "neutron_event_analyzer") -> pd.DataFrame:
         """
         Processes data event by event, grouping optical photons by neutron_id.
         
-        This method:
-        1. Combines self.data with neutron_id from self.sim_data
-        2. Determines the number of batches from SimPhotons or TracedPhotons folder
-        3. Groups traced photons by neutron_id and organizes them by batch
-        4. Processes each neutron event independently
-        5. Combines results by batch into separate files in a suffixed subfolder
-        6. Optionally merges results with simulation and traced data, adding event_id
-        7. Saves processed photon CSV files in ImportedPhotons directory
+        This method supports two different processing approaches:
+        1. "empir_pipeline" (default): Uses empir tools directly for photon2event conversion
+        2. "nea" or "neutron_event_analyzer": Uses the neutron_event_analyzer package
         
         Args:
             dSpace_px: Spatial clustering distance in pixels
@@ -678,11 +674,51 @@ class Analysis:
             spatial_norm_px: Normalization factor for spatial differences (px) in matching
             fov: Field of view in mm
             focus_factor: Factor that relates the hit position on the sensor to the actual hit position on the scintillator screen
+            method: Processing method - "empir_pipeline" (default) or "nea"/"neutron_event_analyzer"
         
         Returns:
             DataFrame with processed event data (optionally merged with sim_data and traced_data)
         """
         
+        # Validate method argument
+        valid_methods = ["empir_pipeline", "nea", "neutron_event_analyzer"]
+        if method not in valid_methods:
+            raise ValueError(f"Invalid method '{method}'. Must be one of: {valid_methods}")
+        
+        # Route to appropriate processing method
+        if method == "empir_pipeline":
+            return self._process_empir_pipeline(
+                dSpace_px=dSpace_px, dTime_s=dTime_s, durationMax_s=durationMax_s,
+                dTime_ext=dTime_ext, nBins=nBins, binning_time_resolution=binning_time_resolution,
+                binning_offset=binning_offset, verbosity=verbosity, merge=merge, suffix=suffix,
+                time_norm_ns=time_norm_ns, spatial_norm_px=spatial_norm_px, 
+                fov=fov, focus_factor=focus_factor
+            )
+        else:  # nea or neutron_event_analyzer
+            return self._process_nea_method(
+                dSpace_px=dSpace_px, verbosity=verbosity, merge=merge, suffix=suffix,
+                time_norm_ns=time_norm_ns, spatial_norm_px=spatial_norm_px,
+                fov=fov, focus_factor=focus_factor
+            )
+
+    def _process_empir_pipeline(self,
+                            dSpace_px: float = 4.0,
+                            dTime_s: float = 50e-9,
+                            durationMax_s: float = 500e-9,
+                            dTime_ext: float = 1.0,
+                            nBins: int = 1000,
+                            binning_time_resolution: float = 1.5625e-9,
+                            binning_offset: float = 0.0,
+                            verbosity: int = 0,
+                            merge: bool = False,
+                            suffix: str = "",
+                            time_norm_ns: float = 1.0,
+                            spatial_norm_px: float = 1.0,
+                            fov: float = 120.0,
+                            focus_factor: float = 1.2) -> pd.DataFrame:
+        """
+        Original empir pipeline implementation
+        """
         # Create base directories
         analysed_dir = self.archive / "AnalysedResults"
         analysed_dir.mkdir(parents=True, exist_ok=True)
@@ -901,169 +937,21 @@ class Analysis:
             if verbosity >= 1:
                 print("Merging processed results with simulation and traced data...")
             
-            def merge_sim_and_recon_data(sim_data, traced_data, recon_data, fov:float = 120, focus_factor: float = 1.2):
-                """
-                Merge simulation, traced photon, and reconstruction dataframes based on neutron_id
-                and row-by-row correspondence between sim_data and traced_data.
-                Matches reconstructed events to simulation photons by minimizing a combined
-                time and spatial distance metric.
-                Adds event_id for each reconstructed event per neutron_id.
-                
-                Args:
-                    sim_data: DataFrame with simulation data
-                    traced_data: DataFrame with traced photon data (row-aligned with sim_data)
-                    recon_data: DataFrame with reconstructed event data
-                    fov (float, optional): Field of View in mm, used to scale photon positions
-                    focus_factor (float, optional): determines the ratio of position recorded on the sensor to the actual hit position on the scintillator screen 
-                
-                Returns:
-                    Merged DataFrame with simulation, traced, and reconstruction columns
-                """
-                sim_df = sim_data.copy()
-                traced_df = traced_data.copy()
-                recon_df = recon_data.copy()
-                
-                # Initialize traced columns in sim_df
-                sim_df['x2'] = np.nan
-                sim_df['y2'] = np.nan
-                sim_df['z2'] = np.nan
-                sim_df['toa2'] = np.nan
-                sim_df['photon_px'] = np.nan
-                sim_df['photon_py'] = np.nan
-                
-                # Assign traced data columns (row-by-row correspondence)
-                if not traced_df.empty:
-                    if len(traced_df) != len(sim_df):
-                        if verbosity >= 1:
-                            print(f"Warning: traced_data ({len(traced_df)} rows) and sim_data ({len(sim_df)} rows) have different lengths. Truncating to minimum.")
-                        min_len = min(len(traced_df), len(sim_df))
-                        sim_df = sim_df.iloc[:min_len].copy()
-                        traced_df = traced_df.iloc[:min_len].copy()
-                    
-                    # Identify time column
-                    time_col = None
-                    for candidate in ['toa2', 'toa', 'time']:
-                        if candidate in traced_df.columns:
-                            time_col = candidate
-                            break
-                    
-                    if time_col and all(col in traced_df.columns for col in ['x2', 'y2']):
-                        sim_df['x2'] = traced_df['x2'].values
-                        sim_df['y2'] = traced_df['y2'].values
-                        sim_df['z2'] = traced_df.get('z2', pd.Series(np.nan, index=traced_df.index)).values
-                        sim_df['toa2'] = traced_df[time_col].values
-                        sim_df['photon_px'] = (sim_df['x2'] + 10) / 10 * 128
-                        sim_df['photon_py'] = (sim_df['y2'] + 10) / 10 * 128
-                        if verbosity >= 2:
-                            print(f"Assigned traced columns. Non-NaN counts: x2={sim_df['x2'].notna().sum()}, toa2={sim_df['toa2'].notna().sum()}")
-                    else:
-                        if verbosity >= 1:
-                            print("Warning: traced_data missing required columns (x2, y2, toa2/toa/time). Traced columns remain NaN.")
-                
-                # Initialize merged DataFrame with sim_df
-                merged_df = sim_df.copy()
-                
-                # Add reconstruction columns with NaN
-                for col in recon_df.columns:
-                    if col != 'neutron_id':
-                        merged_df[col] = np.nan
-                merged_df['event_id'] = np.nan
-                merged_df['time_diff_ns'] = np.nan
-                merged_df['spatial_diff_px'] = np.nan
-                
-                # Group reconstruction data by neutron_id
-                recon_groups = recon_df.groupby('neutron_id')
-                
-                # Match reconstruction events to simulation rows
-                for neutron_id in sorted(merged_df['neutron_id'].unique()):
-                    sim_group = merged_df[merged_df['neutron_id'] == neutron_id].copy()
-                    recon_group = recon_groups.get_group(neutron_id) if neutron_id in recon_groups.groups else pd.DataFrame()
-                    
-                    if recon_group.empty:
-                        continue
-                    
-                    # Assign event_id to reconstruction events
-                    recon_group = recon_group.sort_values('t [s]').reset_index(drop=True)
-                    recon_group['event_id'] = recon_group.index + 1
-                    
-                    # For each reconstruction event, find the closest simulation photon(s)
-                    for _, recon_row in recon_group.iterrows():
-                        n_photons = int(recon_row['nPhotons [1]'])
-                        recon_time_s = recon_row['t [s]']
-                        recon_x = recon_row['x [px]']
-                        recon_y = recon_row['y [px]']
-                        event_id = recon_row['event_id']
-                        
-                        # Compute distances
-                        sim_times = sim_group['toa2'].values  # in seconds
-                        sim_px = sim_group['photon_px'].values
-                        sim_py = sim_group['photon_py'].values
-                        
-                        time_diffs = np.abs(sim_times * 1e-9 - recon_time_s) * 1e9  # Convert sim_times to seconds, compute difference, then convert to ns
-                        spatial_diffs = np.sqrt((sim_px - recon_x)**2 + (sim_py - recon_y)**2)
-                        
-                        if np.all(np.isnan(sim_px)) or np.all(np.isnan(sim_py)) or np.all(np.isnan(sim_times)):
-                            combined_diffs = time_diffs / time_norm_ns
-                            spatial_diffs = np.array([np.nan] * len(time_diffs))
-                        else:
-                            combined_diffs = (time_diffs / time_norm_ns) + (spatial_diffs / spatial_norm_px)
-                        
-                        # Select closest photon(s)
-                        if n_photons == 1:
-                            if len(sim_group) > 0:
-                                closest_idx = np.argmin(combined_diffs)
-                                sim_idx = sim_group.index[closest_idx]
-                                for col in recon_df.columns:
-                                    if col != 'neutron_id':
-                                        merged_df.loc[sim_idx, col] = recon_row[col]
-                                merged_df.loc[sim_idx, 'event_id'] = event_id
-                                merged_df.loc[sim_idx, 'time_diff_ns'] = time_diffs[closest_idx]
-                                merged_df.loc[sim_idx, 'spatial_diff_px'] = spatial_diffs[closest_idx]
-                        else:
-                            if len(sim_group) >= n_photons:
-                                closest_indices = np.argsort(combined_diffs)[:n_photons]
-                                selected_px = sim_group.iloc[closest_indices]['photon_px']
-                                selected_py = sim_group.iloc[closest_indices]['photon_py']
-                                if not (np.all(np.isnan(selected_px)) or np.all(np.isnan(selected_py))):
-                                    com_x = selected_px.mean()
-                                    com_y = selected_py.mean()
-                                    com_dist = np.sqrt((com_x - recon_x)**2 + (com_y - recon_y)**2)
-                                    if com_dist > dSpace_px:
-                                        continue  # Skip if center of mass is too far
-                                for idx in closest_indices:
-                                    sim_idx = sim_group.index[idx]
-                                    for col in recon_df.columns:
-                                        if col != 'neutron_id':
-                                            merged_df.loc[sim_idx, col] = recon_row[col]
-                                        merged_df.loc[sim_idx, 'event_id'] = event_id
-                                        merged_df.loc[sim_idx, 'time_diff_ns'] = time_diffs[idx]
-                                        merged_df.loc[sim_idx, 'spatial_diff_px'] = spatial_diffs[idx]
-                
-                merged_df = self.calculate_reconstruction_stats(merged_df, fov=fov, focus_factor=focus_factor)
-                
-                # Ensure column order
-                sim_cols = [col for col in sim_df.columns if col not in ['x2', 'y2', 'z2', 'toa2', 'photon_px', 'photon_py']]
-                traced_cols = ['x2', 'y2', 'z2', 'toa2', 'photon_px', 'photon_py']
-                recon_cols = [col for col in recon_df.columns if col != 'neutron_id']
-                final_cols = sim_cols + traced_cols + recon_cols + ['event_id', 'time_diff_ns', 'spatial_diff_px', 'x3', 'y3', 'delta_x', 'delta_y', 'delta_r']
-                merged_df = merged_df[[col for col in final_cols if col in merged_df.columns]]
-                
-                return merged_df
-            
-            # Load traced data
+            # Load traced data (unchanged)
             traced_data = pd.DataFrame()
+            traced_photons_path = self.archive / "TracedPhotons"
             if traced_photons_path.exists():
                 traced_files = list(traced_photons_path.glob("*.csv"))
                 if traced_files:
                     traced_dfs = [pd.read_csv(f) for f in traced_files]
                     traced_data = pd.concat(traced_dfs, ignore_index=True)
-                    if verbosity >= 1:
-                        print(f"Loaded traced data with columns: {list(traced_data.columns)}")
-                else:
-                    if verbosity >= 1:
-                        print("Warning: No traced photon CSV files found in TracedPhotons folder.")
             
-            merged_df = merge_sim_and_recon_data(self.sim_data, traced_data, combined_results, fov=fov, focus_factor=focus_factor)
+            # Call shared merge method (replaces the nested def)
+            merged_df = self.merge_sim_and_recon_data(
+                self.sim_data, traced_data, combined_results, 
+                fov=fov, focus_factor=focus_factor, time_norm_ns=time_norm_ns, 
+                spatial_norm_px=spatial_norm_px, dSpace_px=dSpace_px, verbosity=verbosity
+            )
             
             # Save merged results in suffixed folder
             merged_csv = suffix_dir / "merged_all_batches_results.csv"
@@ -1075,7 +963,482 @@ class Analysis:
             return merged_df
         
         return combined_results
+
+    def _process_nea_method(self,
+                            dSpace_px: float = 4.0,
+                            verbosity: int = 0,
+                            merge: bool = False,
+                            suffix: str = "",
+                            time_norm_ns: float = 1.0,
+                            spatial_norm_px: float = 1.0,
+                            fov: float = 120.0,
+                            focus_factor: float = 1.2) -> pd.DataFrame:
+        """
+        Neutron Event Analyzer (nea) implementation - aligned with empir_pipeline output.
+        """
+        try:
+            import neutron_event_analyzer as nea
+        except ImportError:
+            raise ImportError(
+                "neutron_event_analyzer package is required for this method. "
+                "Install with: pip install neutron_event_analyzer[lumacam]"
+            )
         
+        # Create base directories
+        analysed_dir = self.archive / "AnalysedResults"
+        analysed_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create suffixed subfolder
+        suffix_dir = analysed_dir / (suffix.strip("_") if suffix else "default")
+        suffix_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create temporary directories for NEA processing (will be cleaned up)
+        temp_nea_dir = self.archive / "temp_nea"
+        temp_nea_dir.mkdir(parents=True, exist_ok=True)
+        
+        photon_files_dir = temp_nea_dir / "photonFiles"
+        event_files_dir = temp_nea_dir / "eventFiles"
+        export_dir = temp_nea_dir / "export"
+        photon_files_dir.mkdir(parents=True, exist_ok=True)
+        event_files_dir.mkdir(parents=True, exist_ok=True)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        
+        if verbosity >= 1:
+            print(f"Processing data using neutron_event_analyzer method in {temp_nea_dir}...")
+        
+        # Combine data with simulation data
+        if 'neutron_id' not in self.sim_data.columns:
+            raise ValueError("Simulation data must contain a 'neutron_id' column")
+        
+        if len(self.data) != len(self.sim_data):
+            raise ValueError(f"Data length mismatch: self.data has {len(self.data)} rows, self.sim_data has {len(self.sim_data)} rows")
+        
+        combined_data = self.data.copy()
+        combined_data['neutron_id'] = self.sim_data['neutron_id']
+        
+        # Process neutron events and create empir files
+        neutron_groups = combined_data.groupby('neutron_id')
+        
+        empirphot_files = []
+        empirevent_files = []
+        
+        if verbosity >= 1:
+            print(f"Creating empir files for {len(neutron_groups)} neutron events...")
+        
+        for neutron_id, group in tqdm(neutron_groups, desc="Creating empir files"):
+            try:
+                if group.empty:
+                    if verbosity >= 2:
+                        print(f"Skipping empty group for neutron_id {neutron_id}")
+                    continue
+                
+                # Prepare photon data
+                df = group[["x2", "y2", "toa2"]].dropna()
+                if df.empty:
+                    if verbosity >= 2:
+                        print(f"Skipping neutron_id {neutron_id}: no valid x2, y2, toa2 data")
+                    continue
+                    
+                df = df.copy()
+                df["toa2"] *= 1e-9  # Convert toa2 from ns to s
+                df["px"] = (df["x2"] + 10) / 10 * 128
+                df["py"] = (df["y2"] + 10) / 10 * 128
+                df = df[["px", "py", "toa2"]]
+                df.columns = ["x [px]", "y [px]", "t [s]"]
+                df["t_relToExtTrigger [s]"] = df["t [s]"]
+                df = df.loc[(df["t [s]"] >= 0) & (df["t [s]"] < 1)]
+                
+                if df.empty:
+                    if verbosity >= 2:
+                        print(f"Skipping neutron_id {neutron_id}: no data after time filtering")
+                    continue
+                
+                # Save photon data and create empirphot file
+                event_prefix = f"event_{neutron_id}"
+                temp_csv = temp_nea_dir / f"{event_prefix}.csv"
+                df.sort_values("t [s]").to_csv(temp_csv, index=False)
+                
+                empirphot_file = photon_files_dir / f"{event_prefix}.empirphot"
+                cmd = f"{self.empir_import_photons} {temp_csv} {empirphot_file} csv"
+                if verbosity >= 2:
+                    print(f"Running: {cmd}")
+                subprocess.run(cmd, shell=True, check=True)
+                
+                if empirphot_file.exists() and empirphot_file.stat().st_size > 0:
+                    empirphot_files.append(str(empirphot_file))
+                    if verbosity >= 2:
+                        print(f"Created empirphot: {empirphot_file} ({empirphot_file.stat().st_size} bytes)")
+                else:
+                    if verbosity >= 2:
+                        print(f"Failed to create valid empirphot: {empirphot_file}")
+                
+                # Create empirevent file
+                empirevent_file = event_files_dir / f"{event_prefix}.empirevent"
+                p2e_config = self.Photon2EventConfig(dSpace_px=dSpace_px)
+                params_file = suffix_dir / "parameterSettings.json"
+                p2e_config.write(params_file)
+                
+                cmd = (
+                    f"{self.empir_dirpath}/bin/empir_photon2event "
+                    f"-i '{empirphot_file}' "
+                    f"-o '{empirevent_file}' "
+                    f"--paramsFile '{params_file}'"
+                )
+                if verbosity >= 2:
+                    print(f"Running: {cmd}")
+                subprocess.run(cmd, shell=True, check=True)
+                
+                if empirevent_file.exists() and empirevent_file.stat().st_size > 0:
+                    empirevent_files.append(str(empirevent_file))
+                    if verbosity >= 2:
+                        print(f"Created empirevent: {empirevent_file} ({empirevent_file.stat().st_size} bytes)")
+                else:
+                    if verbosity >= 2:
+                        print(f"Failed to create valid empirevent: {empirevent_file}")
+                
+                # Clean up temporary CSV
+                temp_csv.unlink(missing_ok=True)
+                    
+            except Exception as e:
+                if verbosity >= 1:
+                    print(f"Error processing neutron_id {neutron_id}: {str(e)}")
+        
+        if not empirphot_files or not empirevent_files:
+            if verbosity >= 1:
+                print(f"No valid empir files created! Photons: {len(empirphot_files)}, Events: {len(empirevent_files)}")
+            return pd.DataFrame()
+        
+        if verbosity >= 1:
+            print(f"Created {len(empirphot_files)} photon files and {len(empirevent_files)} event files")
+        
+        # Validate file pairing
+        if verbosity >= 2:
+            photon_bases = {Path(f).stem for f in empirphot_files}
+            event_bases = {Path(f).stem for f in empirevent_files}
+            paired_bases = photon_bases & event_bases
+            print(f"Photon file bases (sample): {list(photon_bases)[:5]}...")
+            print(f"Event file bases (sample): {list(event_bases)[:5]}...")
+            print(f"Paired bases: {len(paired_bases)} (sample: {list(paired_bases)[:5]}...)")
+        
+        # Initialize NEA
+        if verbosity >= 1:
+            print(f"Initializing neutron_event_analyzer...")
+        
+        export_dir_str = str(export_dir)
+        analyzer = nea.Analyse(data_folder=str(temp_nea_dir), export_dir=export_dir_str)
+        
+        # Create glob patterns
+        photon_pattern = str(photon_files_dir / "*.empirphot")
+        event_pattern = str(event_files_dir / "*.empirevent")
+        
+        if verbosity >= 2:
+            print(f"Photon glob pattern: {photon_pattern}")
+            print(f"Event glob pattern: {event_pattern}")
+            print(f"Photon files found: {len(glob.glob(photon_pattern))}")
+            print(f"Event files found: {len(glob.glob(event_pattern))}")
+        
+        # Load the data
+        try:
+            analyzer.load(event_glob=event_pattern, photon_glob=photon_pattern)
+            if verbosity >= 2:
+                print(f"Loaded data: Events shape {analyzer.events_df.shape if hasattr(analyzer, 'events_df') else 'N/A'}, "
+                    f"Photons shape {analyzer.photons_df.shape if hasattr(analyzer, 'photons_df') else 'N/A'}")
+        except Exception as e:
+            if verbosity >= 1:
+                print(f"Error loading data in NEA: {str(e)}")
+            return pd.DataFrame()
+        
+        # Run association
+        if verbosity >= 1:
+            print("Running association...")
+        try:
+            analyzer.associate(
+                time_norm_ns=time_norm_ns,
+                spatial_norm_px=spatial_norm_px,
+                dSpace_px=dSpace_px,
+                verbosity=verbosity
+            )
+        except Exception as e:
+            if verbosity >= 1:
+                print(f"Error in NEA association: {str(e)}")
+            return pd.DataFrame()
+        
+        # Get results
+        if hasattr(analyzer, 'associated_df') and not analyzer.associated_df.empty:
+            results_df = analyzer.associated_df.dropna().copy()
+            
+            if verbosity >= 1:
+                print(f"NEA association completed with {len(results_df)} associated events")
+            
+            if verbosity >= 2:
+                print(f"Associated_df columns: {list(results_df.columns)}")
+                print(f"Sample associated_df:\n{results_df.head().to_string()}")
+            
+            # Map neutron_id
+            if 'file_number' in results_df.columns:
+                results_df['neutron_id'] = results_df['file_number'].apply(
+                    lambda x: int(str(x).split('_')[-1]) if isinstance(x, str) and 'event_' in str(x) else x
+                )
+                if verbosity >= 2:
+                    print(f"Extracted neutron_ids (sample): {results_df['neutron_id'].unique()[:5]}...")
+            else:
+                if verbosity >= 1:
+                    print("Warning: No file_number column; assigning sequential IDs")
+                results_df['neutron_id'] = np.arange(len(results_df))
+            
+            # Prepare recon_df to match empir format
+            nea_column_mapping = {
+                'event_x_px': 'x [px]',
+                'event_y_px': 'y [px]',
+                'event_t_s': 't [s]',
+                'n_photons': 'nPhotons [1]',
+                # Add mappings for other columns if present in NEA output, e.g.:
+                # 'event_psd': 'PSD value',
+                # 'event_t_rel_s': 't_relToExtTrigger [s]'
+            }
+            
+            if verbosity >= 2:
+                print(f"Applying NEA column mapping: {nea_column_mapping}")
+            
+            recon_df = results_df.copy()
+            for nea_col, expected_col in nea_column_mapping.items():
+                if nea_col in recon_df.columns:
+                    recon_df = recon_df.rename(columns={nea_col: expected_col})
+                    if verbosity >= 2:
+                        print(f"Renamed {nea_col} to {expected_col}")
+            
+            # Add missing columns to match empir_pipeline output
+            expected_columns = ['x [px]', 'y [px]', 't [s]', 'nPhotons [1]', 'PSD value', 't_relToExtTrigger [s]', 'neutron_id']
+            for col in expected_columns:
+                if col not in recon_df.columns:
+                    if col == 'PSD value':
+                        recon_df[col] = 0.0
+                        if verbosity >= 2:
+                            print(f"Added 'PSD value' column with default 0.0")
+                    elif col == 't_relToExtTrigger [s]':
+                        recon_df[col] = np.nan
+                        if verbosity >= 2:
+                            print(f"Added 't_relToExtTrigger [s]' column with default NaN")
+                    elif col != 'neutron_id':
+                        recon_df[col] = np.nan
+                        if verbosity >= 2:
+                            print(f"Added missing column {col} with default NaN")
+            
+            # Ensure columns are in correct order
+            recon_df = recon_df[expected_columns]
+            
+            if verbosity >= 2:
+                print(f"Final recon_df columns: {list(recon_df.columns)}")
+                print(f"Sample recon_df:\n{recon_df.head().to_string()}")
+            
+            # Save recon events
+            all_batches_csv = suffix_dir / "all_batches_results.csv"
+            recon_df.to_csv(all_batches_csv, index=False)
+            
+            if verbosity >= 1:
+                print(f"All batches results saved to {all_batches_csv} ({len(recon_df)} rows)")
+            
+            # Optional merging
+            if merge:
+                if verbosity >= 1:
+                    print("Merging NEA results with simulation and traced data...")
+                
+                traced_data = pd.DataFrame()
+                traced_photons_path = self.archive / "TracedPhotons"
+                if traced_photons_path.exists():
+                    traced_files = list(traced_photons_path.glob("*.csv"))
+                    if traced_files:
+                        traced_dfs = [pd.read_csv(f) for f in traced_files]
+                        traced_data = pd.concat(traced_dfs, ignore_index=True)
+                        if verbosity >= 1:
+                            print(f"Loaded {len(traced_data)} traced photons")
+                
+                merged_df = self.merge_sim_and_recon_data(
+                    self.sim_data, traced_data, recon_df,
+                    fov=fov, focus_factor=focus_factor,
+                    time_norm_ns=time_norm_ns, spatial_norm_px=spatial_norm_px,
+                    dSpace_px=dSpace_px, verbosity=verbosity
+                )
+                
+                merged_csv = suffix_dir / "merged_all_batches_results.csv"
+                merged_df.to_csv(merged_csv, index=False)
+                
+                if verbosity >= 1:
+                    print(f"NEA merged results saved to {merged_csv} ({len(merged_df)} rows)")
+                
+                return merged_df
+            
+            return recon_df
+        else:
+            if verbosity >= 1:
+                print("No associated events found by NEA")
+            return pd.DataFrame()
+            
+        # finally:
+        # Always clean up temp files
+        if temp_nea_dir.exists():
+            shutil.rmtree(temp_nea_dir, ignore_errors=True)
+            if verbosity >= 2:
+                print(f"Cleaned up temporary directory: {temp_nea_dir}")
+
+
+    def merge_sim_and_recon_data(self, sim_data, traced_data, recon_data, 
+                                fov: float = 120.0, focus_factor: float = 1.2,
+                                time_norm_ns: float = 1.0, spatial_norm_px: float = 1.0,
+                                dSpace_px: float = 4.0, verbosity: int = 0):
+        """
+        Merge simulation, traced photon, and reconstruction dataframes based on neutron_id
+        and row-by-row correspondence between sim_data and traced_data.
+        Matches reconstructed events to simulation photons by minimizing a combined
+        time and spatial distance metric.
+        Adds event_id for each reconstructed event per neutron_id.
+        
+        Args:
+            sim_data: DataFrame with simulation data
+            traced_data: DataFrame with traced photon data (row-aligned with sim_data)
+            recon_data: DataFrame with reconstructed event data
+            fov (float, optional): Field of View in mm, used to scale photon positions
+            focus_factor (float, optional): determines the ratio of position recorded on the sensor to the actual hit position on the scintillator screen 
+            time_norm_ns: Normalization factor for time differences (ns) in matching
+            spatial_norm_px: Normalization factor for spatial differences (px) in matching
+            dSpace_px: Spatial clustering distance for center-of-mass check
+            verbosity: Verbosity level for logging
+        
+        Returns:
+            Merged DataFrame with simulation, traced, and reconstruction columns
+        """
+        sim_df = sim_data.copy()
+        traced_df = traced_data.copy()
+        recon_df = recon_data.copy()
+        
+        # Initialize traced columns in sim_df
+        sim_df['x2'] = np.nan
+        sim_df['y2'] = np.nan
+        sim_df['z2'] = np.nan
+        sim_df['toa2'] = np.nan
+        sim_df['photon_px'] = np.nan
+        sim_df['photon_py'] = np.nan
+        
+        # Assign traced data columns (row-by-row correspondence)
+        if not traced_df.empty:
+            if len(traced_df) != len(sim_df):
+                if verbosity >= 1:
+                    print(f"Warning: traced_data ({len(traced_df)} rows) and sim_data ({len(sim_df)} rows) have different lengths. Truncating to minimum.")
+                min_len = min(len(traced_df), len(sim_df))
+                sim_df = sim_df.iloc[:min_len].copy()
+                traced_df = traced_df.iloc[:min_len].copy()
+            
+            # Identify time column
+            time_col = None
+            for candidate in ['toa2', 'toa', 'time']:
+                if candidate in traced_df.columns:
+                    time_col = candidate
+                    break
+            
+            if time_col and all(col in traced_df.columns for col in ['x2', 'y2']):
+                sim_df['x2'] = traced_df['x2'].values
+                sim_df['y2'] = traced_df['y2'].values
+                sim_df['z2'] = traced_df.get('z2', pd.Series(np.nan, index=traced_df.index)).values
+                sim_df['toa2'] = traced_df[time_col].values
+                sim_df['photon_px'] = (sim_df['x2'] + 10) / 10 * 128
+                sim_df['photon_py'] = (sim_df['y2'] + 10) / 10 * 128
+                if verbosity >= 2:
+                    print(f"Assigned traced columns. Non-NaN counts: x2={sim_df['x2'].notna().sum()}, toa2={sim_df['toa2'].notna().sum()}")
+            else:
+                if verbosity >= 1:
+                    print("Warning: traced_data missing required columns (x2, y2, toa2/toa/time). Traced columns remain NaN.")
+        
+        # Initialize merged DataFrame with sim_df
+        merged_df = sim_df.copy()
+        
+        # Add reconstruction columns with NaN
+        for col in recon_df.columns:
+            if col != 'neutron_id':
+                merged_df[col] = np.nan
+        merged_df['event_id'] = np.nan
+        merged_df['time_diff_ns'] = np.nan
+        merged_df['spatial_diff_px'] = np.nan
+        
+        # Group reconstruction data by neutron_id
+        recon_groups = recon_df.groupby('neutron_id')
+        
+        # Match reconstruction events to simulation rows
+        for neutron_id in sorted(merged_df['neutron_id'].unique()):
+            sim_group = merged_df[merged_df['neutron_id'] == neutron_id].copy()
+            recon_group = recon_groups.get_group(neutron_id) if neutron_id in recon_groups.groups else pd.DataFrame()
+            
+            if recon_group.empty:
+                continue
+            
+            # Assign event_id to reconstruction events
+            recon_group = recon_group.sort_values('t [s]').reset_index(drop=True)
+            recon_group['event_id'] = recon_group.index + 1
+            
+            # For each reconstruction event, find the closest simulation photon(s)
+            for _, recon_row in recon_group.iterrows():
+                n_photons = int(recon_row['nPhotons [1]'])
+                recon_time_s = recon_row['t [s]']
+                recon_x = recon_row['x [px]']
+                recon_y = recon_row['y [px]']
+                event_id = recon_row['event_id']
+                
+                # Compute distances
+                sim_times = sim_group['toa2'].values  # in seconds? Wait, toa2 is ns in your data, but code assumes s? Fix: convert to s
+                sim_times_ns = sim_times * 1e-9 if 'ns' in str(sim_times.dtype) else sim_times  # Adjust if needed; from head, toa2 is ns
+                sim_px = sim_group['photon_px'].values
+                sim_py = sim_group['photon_py'].values
+                
+                time_diffs = np.abs(sim_times_ns - recon_time_s) * 1e9  # Diff in s to ns
+                spatial_diffs = np.sqrt((sim_px - recon_x)**2 + (sim_py - recon_y)**2)
+                
+                if np.all(np.isnan(sim_px)) or np.all(np.isnan(sim_py)) or np.all(np.isnan(sim_times)):
+                    combined_diffs = time_diffs / time_norm_ns
+                    spatial_diffs = np.array([np.nan] * len(time_diffs))
+                else:
+                    combined_diffs = (time_diffs / time_norm_ns) + (spatial_diffs / spatial_norm_px)
+                
+                # Select closest photon(s)
+                if n_photons == 1:
+                    if len(sim_group) > 0:
+                        closest_idx = np.argmin(combined_diffs)
+                        sim_idx = sim_group.index[closest_idx]
+                        for col in recon_df.columns:
+                            if col != 'neutron_id':
+                                merged_df.loc[sim_idx, col] = recon_row[col]
+                        merged_df.loc[sim_idx, 'event_id'] = event_id
+                        merged_df.loc[sim_idx, 'time_diff_ns'] = time_diffs[closest_idx]
+                        merged_df.loc[sim_idx, 'spatial_diff_px'] = spatial_diffs[closest_idx]
+                else:
+                    if len(sim_group) >= n_photons:
+                        closest_indices = np.argsort(combined_diffs)[:n_photons]
+                        selected_px = sim_group.iloc[closest_indices]['photon_px']
+                        selected_py = sim_group.iloc[closest_indices]['photon_py']
+                        if not (np.all(np.isnan(selected_px)) or np.all(np.isnan(selected_py))):
+                            com_x = selected_px.mean()
+                            com_y = selected_py.mean()
+                            com_dist = np.sqrt((com_x - recon_x)**2 + (com_y - recon_y)**2)
+                            if com_dist > dSpace_px:
+                                continue  # Skip if center of mass is too far
+                        for idx in closest_indices:
+                            sim_idx = sim_group.index[idx]
+                            for col in recon_df.columns:
+                                if col != 'neutron_id':
+                                    merged_df.loc[sim_idx, col] = recon_row[col]
+                            merged_df.loc[sim_idx, 'event_id'] = event_id
+                            merged_df.loc[sim_idx, 'time_diff_ns'] = time_diffs[idx]
+                            merged_df.loc[sim_idx, 'spatial_diff_px'] = spatial_diffs[idx]
+        
+        merged_df = self.calculate_reconstruction_stats(merged_df, fov=fov, focus_factor=focus_factor)
+        
+        # Ensure column order (matching your head example)
+        sim_cols = [col for col in sim_df.columns if col not in ['x2', 'y2', 'z2', 'toa2', 'photon_px', 'photon_py']]
+        traced_cols = ['x2', 'y2', 'z2', 'toa2', 'photon_px', 'photon_py']
+        recon_cols = [col for col in recon_df.columns if col != 'neutron_id']
+        final_cols = sim_cols + traced_cols + recon_cols + ['event_id', 'time_diff_ns', 'spatial_diff_px', 'x3', 'y3', 'delta_x', 'delta_y', 'delta_r']
+        merged_df = merged_df[[col for col in final_cols if col in merged_df.columns]]
+        
+        return merged_df
+                
     def calculate_reconstruction_stats(self,df: pd.DataFrame, fov:float=120, focus_factor:float = 1.2):
         """
         Calculates stats on reconstructed events, Adds columms to the analysis dataframe.

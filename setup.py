@@ -79,7 +79,13 @@ setup(
         "rayoptics",
         "tqdm",
         "pandas",
-        "scikit-learn"
+        "scikit-learn",
+        "numpy",
+        "matplotlib",
+        "neutron_event_analyzer @ git+https://github.com/TsvikiHirsh/neutron_event_analyzer.git"
+    ],
+    dependency_links=[
+        "git+https://github.com/TsvikiHirsh/neutron_event_analyzer.git#egg=neutron_event_analyzer",
     ],
     include_package_data=True,
     entry_points={
@@ -91,4 +97,22 @@ setup(
         "build_py": BuildGeant4Simulation,
         "install": CustomInstall,
     },
+    python_requires=">=3.8",
+    author="Tsviki Y. Hirsh",
+    author_email="tsviki@soreq.gov.il",
+    description="G4LumaCam: Geant4-based neutron imaging camera simulation with event reconstruction",
+    long_description=open("README.md").read() if os.path.exists("README.md") else "",
+    long_description_content_type="text/markdown",
+    url="https://github.com/TsvikiHirsh/G4LumaCam",
+    classifiers=[
+        "Development Status :: beta",
+        "Intended Audience :: Science/Research",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Topic :: Scientific/Engineering :: Physics",
+    ],
 )
