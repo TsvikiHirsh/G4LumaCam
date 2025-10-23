@@ -479,16 +479,23 @@ class Lens:
         opm.system_spec.dimensions = 'MM'
         opm.radius_mode = True
 
-        # Load the .zmx file first
+        # Set up initial specs
         sm.gaps[0].thi = dist_from_obj
         osp.field_of_view = FieldSpec(osp, key=['object', 'height'], flds=[0., 60])
         osp.spectral_region = WvlSpec([(486.1327, 0.5), (587.5618, 1.0), (656.2725, 0.5)], ref_wl=1)
         
-        # Temporarily set a pupil spec
-        osp.pupil = PupilSpec(osp, key=['object', 'epd'], value=10.0)
-        sm.do_apertures = True
+        # CRITICAL: Set pupil as f-number in image space
+        osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
+        
+        # CRITICAL: Set do_apertures = False so we control aperture sizes manually
+        sm.do_apertures = False
         
         opm.add_from_file(zmx_path)
+        
+        # CRITICAL: Explicitly set the stop surface to surface 14 (from .zmx file)
+        # In the .zmx file, surface 14 is marked as STOP
+        sm.stop_surface = 14
+        
         opm.update_model()
 
         # Correct specific thicknesses
@@ -500,41 +507,27 @@ class Lens:
 
         if abs(sm.gaps[30].thi - 1.0) > 1e-6:
             sm.gaps[30].thi = 1.0
-
-        opm.update_model()
-        
-        # Find the stop surface (should be surface 14 based on .zmx file)
-        stop_idx = None
-        for i, ifc in enumerate(sm.ifcs):
-            if hasattr(ifc, 'interact_mode') and ifc.interact_mode == 'stop':
-                stop_idx = i
-                break
-        
-        if stop_idx is None:
-            # If not found by interact_mode, find it by checking which surface is the stop
-            stop_idx = sm.stop_surface
-        
-        print(f"  Stop surface found at index: {stop_idx}")
-        
-        # Calculate EPD and stop diameter from f-number
-        pm = opm.parax_model
-        efl = pm.opt_inv / pm.pr_ray[0][mc.slp] if hasattr(pm, 'pr_ray') else 58.0
-        epd = efl / fnumber  # Entrance pupil diameter
-        
-        # The stop diameter should be set to match the EPD
-        # (For this lens, entrance pupil is close to the stop surface)
-        stop_diameter = epd
-        
-        # Set the stop surface aperture
-        sm.ifcs[stop_idx].surface_od = stop_diameter / 2  # surface_od is radius, not diameter
-        
-        # Set the pupil using EPD
-        osp.pupil = PupilSpec(osp, key=['object', 'epd'], value=epd)
         
         opm.update_model()
+        
+        # Verify stop is set correctly
+        print(f"  Stop surface index: {sm.stop_surface}")
+        if sm.stop_surface is not None and sm.stop_surface < len(sm.ifcs):
+            print(f"  Stop surface semi-diameter: {sm.ifcs[sm.stop_surface].max_aperture:.2f} mm")
+        
         apply_paraxial_vignetting(opm)
 
-        print(f"Nikkor 58mm initialized with f/{fnumber:.2f} (EPD = {epd:.2f} mm, Stop diameter = {stop_diameter:.2f} mm, EFL ≈ {efl:.2f} mm)")
+        # Get actual optical parameters
+        pm = opm.parax_model
+        efl = pm.opt_inv / pm.pr_ray[0][mc.slp] if hasattr(pm, 'pr_ray') else 58.0
+        actual_fnumber = efl / (2 * pm.enp_radius) if hasattr(pm, 'enp_radius') and pm.enp_radius > 0 else fnumber
+        
+        print(f"Nikkor 58mm initialized:")
+        print(f"  Requested f/{fnumber:.2f}")
+        print(f"  Actual f/{actual_fnumber:.2f}")
+        print(f"  EFL: {efl:.2f} mm")
+        if hasattr(pm, 'enp_radius'):
+            print(f"  Entrance pupil diameter: {2*pm.enp_radius:.2f} mm")
 
         if save:
             output_path = self.archive / "Nikkor_58mm.roa"
@@ -552,8 +545,8 @@ class Lens:
         osp = opm.optical_spec
         pm = opm.parax_model
         
-        # Enable apertures immediately
-        sm.do_apertures = True
+        # Keep do_apertures = False to maintain manual control
+        sm.do_apertures = False
         
         if self.kind == "nikkor_58mm":
             if not self.default_focus_gaps:
@@ -567,42 +560,57 @@ class Lens:
             sm.gaps[0].thi = self.dist_from_obj + zscan
             
         elif self.kind == "microscope":
-            # ... existing microscope code ...
-            pass
+            if len(self.default_focus_gaps) != 2:
+                raise ValueError("Default focus gaps not set correctly for microscope")
+            if zfine != 0:
+                gap_index_24, default_thi_24 = self.default_focus_gaps[0]
+                if gap_index_24 >= len(sm.gaps):
+                    raise ValueError(f"Invalid gap index {gap_index_24} for microscope lens")
+                if default_thi_24 is None:
+                    raise ValueError(f"Default thickness not set for gap {gap_index_24}")
+                new_thi_24 = default_thi_24 + zfine
+                sm.gaps[gap_index_24].thi = new_thi_24
+
+                gap_index_31, default_thi_31 = self.default_focus_gaps[1]
+                if gap_index_31 >= len(sm.gaps):
+                    raise ValueError(f"Invalid gap index {gap_index_31} for microscope lens")
+                if default_thi_31 is None:
+                    raise ValueError(f"Default thickness not set for gap {gap_index_31}")
+                new_thi_31 = default_thi_31 - zfine
+                sm.gaps[gap_index_31].thi = new_thi_31
+            sm.gaps[0].thi = self.dist_from_obj + zscan
             
         elif self.kind == "zmx_file":
-            # ... existing zmx_file code ...
-            pass
+            if zfine != 0 and self.focus_gaps is not None:
+                for gap_index, scaling_factor in self.focus_gaps:
+                    if gap_index >= len(sm.gaps):
+                        raise ValueError(f"Invalid gap index {gap_index} for zmx_file lens")
+                    default_thi = sm.gaps[gap_index].thi
+                    new_thi = default_thi + zfine * scaling_factor
+                    sm.gaps[gap_index].thi = new_thi
+            sm.gaps[0].thi = self.dist_from_obj + zscan
             
         else:
             raise ValueError(f"Unsupported lens kind: {self.kind}")
         
         # Update f-number if provided
         if fnumber is not None:
-            # Update model first
-            sm.do_apertures = True
-            opm.update_model()
-            
-            # Calculate new EPD
-            efl = pm.opt_inv / pm.pr_ray[0][mc.slp] if hasattr(pm, 'pr_ray') else 58.0
-            epd = efl / fnumber
-            
-            # Find and update stop surface
-            stop_idx = sm.stop_surface
-            stop_diameter = epd
-            
-            # CRITICAL: Update the physical stop aperture diameter
-            sm.ifcs[stop_idx].surface_od = stop_diameter / 2  # surface_od is radius
-            
-            # Set new pupil spec
-            osp.pupil = PupilSpec(osp, key=['object', 'epd'], value=epd)
-            
-            print(f"Changed aperture: f/{fnumber:.2f} (EPD = {epd:.2f} mm, Stop diameter = {stop_diameter:.2f} mm)")
+            # Change the pupil specification
+            osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
+            print(f"Changed f-number to f/{fnumber:.2f}")
         
-        # Final update
-        sm.do_apertures = True
+        # Update model
+        sm.do_apertures = False  # Maintain manual control
         opm.update_model()
         apply_paraxial_vignetting(opm)
+        
+        # Verify the change
+        pm = opm.parax_model
+        efl = pm.opt_inv / pm.pr_ray[0][mc.slp] if hasattr(pm, 'pr_ray') else 58.0
+        actual_fnumber = efl / (2 * pm.enp_radius) if hasattr(pm, 'enp_radius') and pm.enp_radius > 0 else fnumber
+        
+        if fnumber is not None and abs(actual_fnumber - fnumber) > 0.1:
+            print(f"  Warning: Requested f/{fnumber:.2f} but got f/{actual_fnumber:.2f}")
         
         self.opm = opm
         
