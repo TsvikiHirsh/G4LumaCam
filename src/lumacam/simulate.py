@@ -335,6 +335,55 @@ class Config:
                 csv_batch_size=10000,
             )
 
+    @classmethod
+    def neutrons_bragg_edge(cls, energy_min: Optional[float] = 0.00128, energy_max: Optional[float] = 0.327) -> 'Config':
+        """Thermal neutron configuration for Bragg edge imaging with NCrystal materials.
+
+        Default energy range corresponds to neutron wavelengths from 0.5 Å to 8 Å,
+        which is ideal for observing Bragg edges in crystalline materials.
+
+        Args:
+            energy_min (float): Minimum neutron energy in eV. Default is 0.00128 eV (8 Å).
+            energy_max (float): Maximum neutron energy in eV. Default is 0.327 eV (0.5 Å).
+
+        Returns:
+            Config: Configuration object for Bragg edge imaging.
+
+        Example:
+            >>> config = Config.neutrons_bragg_edge()
+            >>> sim = Simulate("bragg_edge_test")
+            >>> df = sim.run(config)
+        """
+        if energy_min is not None and energy_max is not None:
+            # Use linear energy distribution
+            return cls(
+                particle="neutron",
+                energy_type="Lin",
+                energy_min=energy_min,
+                energy_max=energy_max,
+                energy_gradient=0.0,
+                energy_intercept=1.0,
+                energy_unit="eV",
+                position_z=-900,  # Flight path of 9 m
+                position_unit="cm",
+                halfx=60,  # 12 cm FOV = 120 mm, halfx = 60 mm
+                halfy=60,  # 12 cm FOV = 120 mm, halfy = 60 mm
+                shape_unit="mm",
+                flux=1e6,  # Neutron flux in n/cm²/s
+                freq=20,  # Pulse frequency in Hz (20 Hz)
+                tmin=0.0,  # Start time
+                tmax=50000.0,  # End time in ns
+                num_events=50000,
+                progress_interval=100,
+                csv_filename="bragg_edge.csv",
+                sample_material="Fe_sg229.ncmat;temp=293.15K",  # Fe gamma phase (BCC) at room temperature
+                scintillator="GS20",  # GS20 is optimized for thermal neutron detection
+                sample_thickness=2.0,  # 20 mm sample thickness
+                sample_width=12.0,  # 12 cm = 120 mm
+                scintillator_thickness=0.5,  # 5 mm scintillator thickness
+                csv_batch_size=5000,
+            )
+
     def write(self, output_file: str) -> str:
         """
         Write configuration to a Geant4 macro file.

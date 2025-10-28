@@ -13,6 +13,7 @@ G4LumaCam is a Geant4-based simulation package for the LumaCam event camera that
 ## Key Features
 
 - **High-Fidelity Physics**: Neutron interaction simulation based on Geant4 10.6 physics models
+- **NCrystal Support**: Optional integration with NCrystal for accurate thermal neutron scattering in crystalline materials
 - **Realistic Optics**: Accurate optical ray tracing through the LumaCam lens system
 - **Standard Output Format**: Generates TPX3 files compatible with multiple reconstruction tools
 - **Flexible Reconstruction**: Use EMPIR for official workflow - just like in a real experiment!
@@ -119,20 +120,43 @@ If NCrystal is not found, G4LumaCam will build without NCrystal support (standar
 
 #### Using NCrystal Materials
 
-With NCrystal support enabled, you can define crystalline sample materials using NCrystal cfg-strings in your macro files:
+With NCrystal support enabled, you can define crystalline sample materials using NCrystal cfg-strings. The easiest way is to use the Python API with the pre-configured `neutrons_bragg_edge()` method:
 
-```bash
-# Example: Fe gamma phase (BCC) at room temperature
-/lumacam/sampleMaterial Fe_sg229.ncmat;temp=293.15K
+```python
+import lumacam
 
-# Example: Aluminum FCC at 80K
-/lumacam/sampleMaterial Al_sg225.ncmat;temp=80K
-
-# Example: Silicon with custom parameters
-/lumacam/sampleMaterial Si_sg227.ncmat;temp=300K;dcutoff=0.5
+# Use the pre-configured Bragg edge configuration (Fe sample at 293K)
+config = lumacam.Config.neutrons_bragg_edge()
+sim = lumacam.Simulate("bragg_edge_test")
+df = sim.run(config)
 ```
 
-**Pre-configured Examples**: See the `macros/thermal_neutrons/` directory for ready-to-use configurations for Fe Bragg edge imaging with thermal neutrons (0.5 Å to 8 Å wavelength range).
+**Customize the material and parameters:**
+
+```python
+# Custom NCrystal material with different parameters
+config = lumacam.Config.neutrons_bragg_edge(
+    energy_min=0.001,  # eV (corresponds to ~9 Å)
+    energy_max=0.5     # eV (corresponds to ~0.4 Å)
+)
+config.sample_material = "Al_sg225.ncmat;temp=80K"  # Aluminum FCC at 80K
+config.sample_thickness = 1.0  # 10 mm thickness
+config.num_events = 100000
+
+sim = lumacam.Simulate("al_bragg_edge")
+df = sim.run(config)
+```
+
+**Available NCrystal cfg-string examples:**
+- `Fe_sg229.ncmat;temp=293.15K` - Iron (BCC) at room temperature
+- `Al_sg225.ncmat;temp=80K` - Aluminum (FCC) at 80K
+- `Si_sg227.ncmat;temp=300K` - Silicon (diamond cubic)
+- `C_sg194_pyrolytic_graphite.ncmat` - Pyrolytic graphite
+
+For macro files, use the `/lumacam/sampleMaterial` command:
+```bash
+/lumacam/sampleMaterial Fe_sg229.ncmat;temp=293.15K
+```
 
 #### NCrystal Physics
 
