@@ -10,6 +10,7 @@ public:
     SimulationManager();
     void BeginOfRunAction(const G4Run*) override;
     void EndOfRunAction(const G4Run*) override;
+    void SetTotalNeutrons(G4int totalNeutrons);
 
     class EventHandler : public G4UserEventAction {
     public:
@@ -23,6 +24,7 @@ public:
 private:
     EventProcessor* processor;
     G4int eventCounter;
+    G4int totalNeutrons;
 };
 
 #endif

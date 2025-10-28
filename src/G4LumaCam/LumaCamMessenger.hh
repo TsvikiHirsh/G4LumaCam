@@ -1,5 +1,6 @@
 #ifndef LUMACAM_MESSENGER_HH
 #define LUMACAM_MESSENGER_HH
+
 #include "G4GenericMessenger.hh"
 #include "G4LogicalVolume.hh"
 #include "G4NistManager.hh"
@@ -18,6 +19,12 @@ public:
     void SetScintillatorMaterial(const G4String& materialName);
     void SetScintThickness(G4double thickness);
     void SetSampleThickness(G4double thickness);
+    void SetSampleWidth(G4double width);
+    void SetFlux(G4double flux);
+    void SetFrequency(G4double freq);
+    void SetBatchSize(G4int size);
+    void SetSampleLog(G4LogicalVolume* log);
+    void SetScintLog(G4LogicalVolume* log);
 
 private:
     G4String* csvFilename;
@@ -26,8 +33,6 @@ private:
     G4int batchSize;
     G4GenericMessenger* messenger;
     MaterialBuilder* matBuilder;
-
-    
 };
 
 #endif

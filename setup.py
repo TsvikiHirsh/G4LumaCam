@@ -80,7 +80,10 @@ setup(
         "tqdm",
         "pandas",
         "scikit-learn",
-        "neutron_event_analyzer",
+        "lmfit",
+        "matplotlib",
+        "tifffile",
+        "roifile"
     ],
     dependency_links=[
         "git+https://github.com/TsvikiHirsh/neutron_event_analyzer.git#egg=neutron_event_analyzer",

@@ -1,5 +1,5 @@
 import logging
-# Or more specifically, suppress all INFO messages globally
+# Suppress all INFO messages globally
 logging.disable(logging.INFO)
 from rayoptics.environment import OpticalModel, PupilSpec, FieldSpec, WvlSpec, InteractiveLayout
 from rayoptics.environment import RayFanFigure, SpotDiagramFigure, Fit, open_model
@@ -7,7 +7,7 @@ from rayoptics.gui import roafile
 from rayoptics.elem.elements import Element
 from rayoptics.raytr.trace import apply_paraxial_vignetting, trace_base
 import matplotlib.pyplot as plt
-from typing import Union, List, Tuple
+from typing import Union, List, Tuple, Optional
 from pathlib import Path
 from multiprocessing import Pool
 from functools import partial   
@@ -24,8 +24,9 @@ from io import StringIO
 from contextlib import redirect_stdout
 import tempfile
 import os
-
-
+import struct
+import json
+import shutil
 
 class VerbosityLevel(IntEnum):
     """Verbosity levels for simulation output."""
@@ -57,7 +58,6 @@ def _process_ray_chunk_standalone(chunk, opm_file_path, wvl_values, verbosity=0)
         List of traced ray results, or None for failed traces
     """
     try:
-        
         # Log start of chunk processing
         if verbosity >= 2:
             print(f"Worker processing chunk of {len(chunk)} rays with opm_file: {opm_file_path}")
@@ -106,20 +106,21 @@ class Lens:
     Lens defining object with integrated data management.
     """
     def __init__(self, archive: str = None, data: "pd.DataFrame" = None,
-                 kind: str = "nikkor_58mm", focus: float = None, zmx_file: str = None,
-                 focus_gaps: List[Tuple[int, float]] = None, dist_from_obj: float = None,
-                 gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0, fnumber: float = 8.0):
+                kind: str = "nikkor_58mm", zfine: float = 12.75, zmx_file: str = None,
+                focus_gaps: List[Tuple[int, float]] = None, dist_from_obj: float = None,
+                gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0, fnumber: float = 8.0,
+                FOV: float = None, magnification: float = None,
+                empir_dirpath: str = None,
+                verbosity: VerbosityLevel = VerbosityLevel.BASIC):
         """
         Initialize a Lens object with optical model and data management.
 
         Args:
             archive (str, optional): Directory path for saving results.
             data (pd.DataFrame, optional): Optical photon data table.
-            kind (str, optional): Lens type ('nikkor_58mm', 'microscope', 'zmx_file').
-                Defaults to 'nikkor_58mm'. Auto-detected as 'zmx_file' if zmx_file parameter is provided.
-            focus (float, optional): Initial focus adjustment in mm relative to default settings.
-            zmx_file (str, optional): Path to .zmx file for custom lens.
-                When provided, kind is automatically set to 'zmx_file'.
+            kind (str, optional): Lens type ('nikkor_58mm', 'microscope', 'zmx_file'). Defaults to 'nikkor_58mm'.
+            zfine (float, optional): Initial zfine adjustment in mm relative to default settings.
+            zmx_file (str, optional): Path to .zmx file for custom lens (required when kind='zmx_file').
             focus_gaps (List[Tuple[int, float]], optional): List of (gap_index, scaling_factor) for focus adjustment.
                 Required for focus adjustments when using zmx_file.
             dist_from_obj (float, optional): Distance from object to first lens in mm.
@@ -127,7 +128,9 @@ class Lens:
             gap_between_lenses (float, optional): Gap between lenses in mm. Defaults to 15.0.
             dist_to_screen (float, optional): Distance from last lens to screen in mm. Defaults to 20.0.
             fnumber (float, optional): F-number of the optical system. Defaults to 8.0.
-
+            FOV (float, optional): Field of view in mm. Defaults to None. for 'nikor_58mm', FOV=120mm and for 'microscope', FOV=10mm, for 'zmx_file', FOV=60mm.
+            magnification (float, optional): Manually define magnification. Defaults to None.
+            verbosity (VerbosityLevel, optional): Verbosity level for logging. Defaults to VerbosityLevel.BASIC.
         Raises:
             ValueError: If invalid lens kind, missing zmx_file for 'zmx_file', or invalid parameters.
 
@@ -146,9 +149,10 @@ class Lens:
             kind = "zmx_file"
 
         self.kind = kind
-        self.focus = focus
+        self.zfine = zfine
         self.zmx_file = zmx_file
         self.focus_gaps = focus_gaps
+        self.FOV = FOV
 
         # Validate inputs
         if kind == "zmx_file" and zmx_file is None:
@@ -156,17 +160,21 @@ class Lens:
 
         # Set default parameters based on lens kind
         if kind == "nikkor_58mm":
-            self.dist_from_obj = dist_from_obj if dist_from_obj else 461.535  # Match imported model
+            self.dist_from_obj = dist_from_obj if dist_from_obj else 461.535
             self.gap_between_lenses = 0.0
             self.dist_to_screen = 0.0
             self.fnumber = fnumber if fnumber != 8.0 else 0.98
-            self.default_focus_gaps = [(22, 2.68)]  # Default thickness for gap 22
+            self.default_focus_gaps = [(22, 2.68)]
+            if self.FOV is None:
+                self.FOV = 120.0
         elif kind == "microscope":
-            self.dist_from_obj = dist_from_obj if dist_from_obj else 41.0  # Default distance for microscope
+            self.dist_from_obj = dist_from_obj if dist_from_obj else 41.0
             self.gap_between_lenses = gap_between_lenses
             self.dist_to_screen = dist_to_screen
             self.fnumber = fnumber
-            self.default_focus_gaps = [(24, None), (31, None)]  # Will be set after loading
+            self.default_focus_gaps = [(24, None), (31, None)]
+            if self.FOV is None:
+                self.FOV = 10.0
         elif kind == "zmx_file":
             # Provide sensible defaults for zmx_file to prevent None values
             self.dist_from_obj = dist_from_obj if dist_from_obj is not None else 100.0  # Default distance
@@ -215,20 +223,55 @@ class Lens:
         if self.kind == "nikkor_58mm":
             self.opm0 = self.nikkor_58mm(dist_from_obj=self.dist_from_obj, fnumber=self.fnumber, save=False)
             self.opm = deepcopy(self.opm0)
-            if focus is not None:
-                self.opm = self.refocus(zfine=focus, save=False)
+            if zfine is not None:
+                self.opm = self.refocus(zfine=zfine, save=False)
         elif self.kind == "microscope":
             self.opm0 = self.microscope_nikor_80_200mm_canon_50mm(focus=focus or 0.0, save=False)
             self.opm = deepcopy(self.opm0)
-            if focus is not None:
-                self.opm = self.refocus(zfine=focus, save=False)
+            if zfine is not None:
+                self.opm = self.refocus(zfine=zfine, save=False)
         elif self.kind == "zmx_file":
-            self.opm0 = self.load_zmx_lens(zmx_file, focus=focus, save=False)
+            self.opm0 = self.load_zmx_lens(zmx_file, focus=zfine, save=False)
             self.opm = deepcopy(self.opm0)
-            if focus is not None:
-                self.opm = self.refocus(zfine=focus, save=False)
+            if zfine is not None:
+                self.opm = self.refocus(zfine=zfine, save=False)
         else:
             raise ValueError(f"Unknown lens kind: {self.kind}")
+
+        # get the multiplication value for converting from mm to pixels
+        if magnification is not None:
+            self.reduction_ratio = magnification
+        else:
+            self.reduction_ratio = self.get_first_order_parameters().loc["Reduction Ratio","Value"]
+
+        try:
+            if empir_dirpath is not None:
+                self.empir_dirpath = Path(empir_dirpath)
+            else:
+                try:
+                    from G4LumaCam.config.paths import EMPIR_PATH
+                    self.empir_dirpath = Path(EMPIR_PATH)
+                except ImportError:
+                    self.empir_dirpath = Path("./empir")
+
+            # if not self.empir_dirpath.exists():
+            #     raise FileNotFoundError(f"{self.empir_dirpath} does not exist.")
+            
+            required_files = {
+                "empir_import_photons": "empir_import_photons",
+            }
+            
+            self.executables = {}
+            for attr_name, filename in required_files.items():
+                file_path = self.empir_dirpath / filename
+                if not file_path.exists():
+                    raise FileNotFoundError(f"{filename} not found in {self.empir_dirpath}")
+                self.executables[attr_name] = file_path
+                setattr(self, attr_name, file_path)
+        except Exception as e:
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"⚠️ Warning: Could not set empir_dirpath or find required files: {e}")
+
 
     def get_first_order_parameters(self, opm: "OpticalModel" = None) -> pd.DataFrame:
         """
@@ -246,7 +289,7 @@ class Lens:
         if opm is None:
             opm = self.opm0
         pm = opm['parax_model']
-        
+
         output = StringIO()
         with redirect_stdout(output):
             pm.first_order_data()
@@ -349,7 +392,7 @@ class Lens:
             gap_between_lenses (float, optional): Gap between lenses in mm.
             dist_to_screen (float, optional): Distance from last lens to screen in mm.
             fnumber (float, optional): F-number of the optical system.
-            save (bool, optional): Save the optical model to a file.
+            save (bool): Save the optical model to a file.
 
         Returns:
             OpticalModel: The loaded optical model.
@@ -423,7 +466,6 @@ class Lens:
 
         sm.gaps[0].thi = dist_from_obj
         osp.pupil = PupilSpec(osp, key=['object', 'f/#'], value=fnumber)
-
         osp.field_of_view = FieldSpec(osp, key=['object', 'height'], flds=[0., 1])  # Set field of view
         osp.spectral_region = WvlSpec([(486.1327, 0.5), (587.5618, 1.0), (656.2725, 0.5)], ref_wl=1)
         sm.do_apertures = False
@@ -447,8 +489,6 @@ class Lens:
 
         opm.flip(1, 15)
         
-        # opm.rebuild_from_seq()
-
         # Store default gap thicknesses for microscope
         self.default_focus_gaps = [(24, sm.gaps[24].thi), (31, sm.gaps[31].thi)]
         opm = self.refocus(opm=opm, zfine=focus, save=False)
@@ -497,27 +537,18 @@ class Lens:
         opm.add_from_file(zmx_path)
         opm.update_model()
 
-        # Debug: Print number of gaps
-        # print(f"Loaded {len(sm.gaps)} gaps from .zmx file")
-
         # Correct specific thicknesses
         if len(sm.gaps) <= 30:
             raise ValueError(f"Insufficient gaps in .zmx file: {len(sm.gaps)} found, expected at least 31")
 
         # Correct surface 22 thickness (from 21.2900 mm to 2.68000 mm)
         if abs(sm.gaps[22].thi - 2.68) > 1e-6:
-            # print(f"Correcting surface 22 thickness from {sm.gaps[22].thi:.6f} to 2.68000 mm")
             sm.gaps[22].thi = 2.68
 
         # Correct surface 30 thickness (from 0.00000 mm to 1.00000 mm)
         if abs(sm.gaps[30].thi - 1.0) > 1e-6:
-            # print(f"Correcting surface 30 thickness from {sm.gaps[30].thi:.6f} to 1.00000 mm")
             sm.gaps[30].thi = 1.0
 
-        # Ensure stop is at surface 14
-        # sm.set_stop(surface=14)
-
-        # Apply paraxial vignetting and update model
         opm.update_model()
         apply_paraxial_vignetting(opm)
 
@@ -533,14 +564,14 @@ class Lens:
 
         return opm
 
-    def refocus(self, opm: "OpticalModel" = None, zscan: float = 0, zfine: float = 0, fnumber: float = None, save: bool = False) -> OpticalModel:
+    def refocus(self, opm: "OpticalModel" = None, zscan: float = 0, zfine: float = 12.75, fnumber: float = None, save: bool = False) -> OpticalModel:
         """
         Refocus the lens by adjusting gaps relative to default settings.
 
         Args:
             opm (OpticalModel, optional): Optical model to refocus. Defaults to self.opm0.
             zscan (float): Distance to move the lens assembly in mm relative to default object distance. Defaults to 0.
-            zfine (float): Focus adjustment in mm relative to default gap thicknesses (for microscope, gap 24 increases, gap 31 decreases). Defaults to 0.
+            zfine (float): Focus adjustment in mm relative to default gap thicknesses (for microscope, gap 24 increases, gap 31 decreases). Defaults to 12.75
             fnumber (float, optional): New f-number for the lens.
             save (bool): Save the optical model to a file.
 
@@ -562,36 +593,29 @@ class Lens:
                 raise ValueError(f"Invalid gap index {gap_index} for nikkor_58mm lens")
             if zfine != 0:
                 new_thi = default_thi + zfine
-                # print(f"Adjusting nikkor_58mm focus: gap {gap_index} from {sm.gaps[gap_index].thi:.6f} to {new_thi:.6f} mm (zfine={zfine})")
                 sm.gaps[gap_index].thi = new_thi
             sm.gaps[0].thi = self.dist_from_obj + zscan
-            # print(f"Adjusting nikkor_58mm object distance: from {sm.gaps[0].thi - zscan:.6f} to {sm.gaps[0].thi:.6f} mm (zscan={zscan})")
             
         elif self.kind == "microscope":
             if len(self.default_focus_gaps) != 2:
                 raise ValueError("Default focus gaps not set correctly for microscope")
             if zfine != 0:
-                # Gap 24: Increase by zfine
                 gap_index_24, default_thi_24 = self.default_focus_gaps[0]
                 if gap_index_24 >= len(sm.gaps):
                     raise ValueError(f"Invalid gap index {gap_index_24} for microscope lens")
                 if default_thi_24 is None:
                     raise ValueError(f"Default thickness not set for gap {gap_index_24}")
                 new_thi_24 = default_thi_24 + zfine
-                # print(f"Adjusting microscope focus: gap {gap_index_24} from {sm.gaps[gap_index_24].thi:.6f} to {new_thi_24:.6f} mm (zfine=+{zfine})")
                 sm.gaps[gap_index_24].thi = new_thi_24
 
-                # Gap 31: Decrease by zfine
                 gap_index_31, default_thi_31 = self.default_focus_gaps[1]
                 if gap_index_31 >= len(sm.gaps):
                     raise ValueError(f"Invalid gap index {gap_index_31} for microscope lens")
                 if default_thi_31 is None:
                     raise ValueError(f"Default thickness not set for gap {gap_index_31}")
                 new_thi_31 = default_thi_31 - zfine
-                # print(f"Adjusting microscope focus: gap {gap_index_31} from {sm.gaps[gap_index_31].thi:.6f} to {new_thi_31:.6f} mm (zfine=-{zfine})")
                 sm.gaps[gap_index_31].thi = new_thi_31
             sm.gaps[0].thi = self.dist_from_obj + zscan
-            # print(f"Adjusting microscope object distance: from {sm.gaps[0].thi - zscan:.6f} to {sm.gaps[0].thi:.6f} mm (zscan={zscan})")
             
         elif self.kind == "zmx_file":
             if zfine != 0 and self.focus_gaps is not None:
@@ -600,10 +624,8 @@ class Lens:
                         raise ValueError(f"Invalid gap index {gap_index} for zmx_file lens")
                     default_thi = sm.gaps[gap_index].thi
                     new_thi = default_thi + zfine * scaling_factor
-                    # print(f"Adjusting zmx_file focus: gap {gap_index} from {sm.gaps[gap_index].thi:.6f} to {new_thi:.6f} mm (zfine={zfine}, scale={scaling_factor})")
                     sm.gaps[gap_index].thi = new_thi
             sm.gaps[0].thi = self.dist_from_obj + zscan
-            # print(f"Adjusting zmx_file object distance: from {sm.gaps[0].thi - zscan:.6f} to {sm.gaps[0].thi:.6f} mm (zscan={zscan})")
             
         else:
             raise ValueError(f"Unsupported lens kind: {self.kind}")
@@ -643,23 +665,26 @@ class Lens:
         return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
 
 
-    def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
-                join=False, print_stats=False, n_processes=None, chunk_size=1000, 
-                progress_bar=True, timeout=3600, return_df=False, 
-                verbosity=VerbosityLevel.BASIC):
+    def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=12.75, fnumber=None,
+                    source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=10, 
+                    join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                    progress_bar=True, timeout=3600, return_df=False, split_method="auto",
+                    seed: int = None,
+                    verbosity=VerbosityLevel.BASIC
+                    ) -> Optional[pd.DataFrame]:
         """
-        Trace rays from simulation data files and save processed results.
+        Trace rays from simulation data files and save processed results, optionally applying pixel saturation and blob effect.
+        
+        If groupby() was called prior to this method, automatically performs grouped tracing for each group.
+        Otherwise, performs standard single-archive tracing.
 
         This method processes ray data from CSV files in the 'SimPhotons' directory using either
         a provided optical model, a saved optical model file, or by creating a refocused version
-        of the default optical model. Results are saved to the 'TracedPhotons' directory.
-
-        Processing Pipeline:
-        1. Locates all non-empty 'sim_data_*.csv' files in 'SimPhotons' directory
-        2. Converts ray data to appropriate format for optical tracing
-        3. Processes rays in parallel chunks using multiprocessing
-        4. Saves traced results to 'TracedPhotons' directory
-        5. Optionally returns combined results as a DataFrame
+        of the default optical model.
+        
+        The method supports two output workflows controlled by the 'source' parameter:
+        1. "hits" workflow: Applies saturation (if deadtime/blob provided), generates TPX3 files
+        2. "photons" workflow: Saves traced photons directly without saturation, ready for direct import
 
         Parameters:
         -----------
@@ -672,12 +697,36 @@ class Lens:
         zscan : float, default 0
             Distance to move the lens assembly in mm relative to default object distance.
             Only used if neither opm nor opm_file is provided.
-        zfine : float, default 0
+        zfine : float, default 12.75
             Focus adjustment in mm relative to default gap thicknesses. Only used if 
             neither opm nor opm_file is provided.
         fnumber : float, optional
             New f-number for the lens. Applied to refocused model if neither opm nor
             opm_file is provided.
+        source : str, optional
+            Output workflow mode:
+            - None (default): Auto-detect based on deadtime/blob parameters
+            - If deadtime > 0 or blob > 0: uses "hits" workflow
+            - Otherwise: uses "photons" workflow
+            - "hits": Apply saturation and generate TPX3 files (requires deadtime and/or blob)
+            - "photons": Save traced photons directly without saturation for direct import
+        deadtime : float, optional
+            Deadtime in nanoseconds for pixel saturation. Only used in "hits" workflow.
+            If source=None and deadtime > 0, automatically selects "hits" workflow.
+        blob : float, default 0.0
+            Interaction radius in pixels for photon hits. If > 0, each photon hit affects
+            all pixels within this radius. Only used in "hits" workflow.
+            If source=None and blob > 0, automatically selects "hits" workflow.
+        blob_variance : float, default 0.0
+            Radius value subtracted from blob radius (in pixels). Only used if blob > 0.
+            Each photon's actual blob radius is drawn uniformly from [blob - blob_variance, blob].
+            Example: blob=5, blob_variance=2.5 → radius uniformly distributed in [2.5, 5.0] pixels.
+        decay_time : float, default 100.0
+            Exponential decay time constant in nanoseconds for blob activation timing.
+            Single delay drawn per photon, applied to all pixels in its blob.
+        seed : int, optional
+            Random seed for reproducibility. If None, uses random state. If specified, allows
+            exact reconstruction of results across multiple runs.
         join : bool, default False
             If True, concatenates original simulation data with traced results.
             If False, returns only traced positions and identifiers.
@@ -696,30 +745,138 @@ class Lens:
         return_df : bool, default False
             If True, returns a combined DataFrame of all processed files.
             If False, returns None (files are still saved to disk).
+        split_method : str, default "auto"
+            TPX3 file splitting strategy (only used in "hits" workflow):
+            - "auto": Groups neutron events to minimize file count (default)
+            - "event": Creates one TPX3 file per neutron_id for event-by-event analysis
         verbosity : VerbosityLevel, default VerbosityLevel.BASIC
             Controls output detail level:
-            - QUIET: Only essential error messages
-            - BASIC: Progress bars + basic file info + statistics
-            - DETAILED: All available information including warnings
+            - QUIET (0): Only essential error messages
+            - BASIC (1): Progress bars + basic file info + statistics
+            - DETAILED (2): All available information including warnings
 
         Returns:
         --------
         pd.DataFrame or None
             Combined DataFrame of all processed results if return_df=True, 
-            otherwise None. Each row represents a traced ray with columns:
-            - x2, y2, z2: Final ray position coordinates
-            - id, neutron_id: Ray identifiers (if present in original data)
-            - toa2: Time of arrival (if 'toa' present in original data)
-            - Original columns (if join=True)
-
+            otherwise None. Each row represents a traced ray.
+        
         Raises:
         -------
-        ValueError
-            If both opm and opm_file are provided, or if optical model creation fails
-        FileNotFoundError
-            If opm_file is specified but file does not exist
-        Exception
-            If parallel processing or file operations fail
+        ValueError: If both opm and opm_file are provided, if parameters are invalid,
+                    or if source="hits" but neither deadtime nor blob is provided.
+        FileNotFoundError: If opm_file does not exist or if no valid simulation
+                            data files are found.
+        RuntimeError: If tracing fails for a file.
+        
+        Examples:
+        ---------
+        Hits workflow with saturation (auto-detected):
+        >>> optics.trace_rays(deadtime=100, blob=5.0)  # Auto-detects "hits" workflow
+        
+        Hits workflow with explicit source:
+        >>> optics.trace_rays(source="hits", deadtime=100, blob=5.0)
+        
+        Photons workflow (auto-detected):
+        >>> optics.trace_rays()  # Auto-detects "photons" workflow (no saturation)
+        
+        Photons workflow with explicit source:
+        >>> optics.trace_rays(source="photons")  # Direct import, no saturation
+        """
+        # Auto-detect source if not specified
+        if source is None:
+            if deadtime is not None and deadtime > 0:
+                source = "hits"
+            elif blob > 0:
+                source = "hits"
+            else:
+                source = "photons"
+            
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"Auto-detected source: '{source}'")
+        
+        # Validate source parameter
+        if source not in ["hits", "photons"]:
+            raise ValueError(f"Invalid source: '{source}'. Must be 'hits' or 'photons'")
+        
+        # Validate hits workflow requirements
+        if source == "hits":
+            if (deadtime is None or deadtime <= 0) and blob <= 0:
+                raise ValueError(
+                    "source='hits' requires either deadtime > 0 or blob > 0 for saturation. "
+                    "Use source='photons' for direct import without saturation."
+                )
+        
+        # Check if groupby was called - if so, delegate to grouped tracing
+        if hasattr(self, '_groupby_dir') and hasattr(self, '_groupby_labels'):
+            return self._trace_rays_grouped(
+                opm=opm,
+                opm_file=opm_file,
+                zscan=zscan,
+                zfine=zfine,
+                fnumber=fnumber,
+                source=source,
+                deadtime=deadtime,
+                blob=blob,
+                blob_variance=blob_variance,
+                decay_time=decay_time,
+                seed=seed,
+                join=join,
+                print_stats=print_stats,
+                n_processes=n_processes,
+                chunk_size=chunk_size,
+                progress_bar=progress_bar,
+                timeout=timeout,
+                return_df=return_df,
+                split_method=split_method,
+                verbosity=verbosity
+            )
+        
+        # Otherwise, perform standard single-archive tracing
+        return self._trace_rays_single(
+            opm=opm,
+            opm_file=opm_file,
+            zscan=zscan,
+            zfine=zfine,
+            fnumber=fnumber,
+            source=source,
+            deadtime=deadtime,
+            blob=blob,
+            blob_variance=blob_variance,
+            decay_time=decay_time,        
+            seed=seed,    
+            join=join,
+            print_stats=print_stats,
+            n_processes=n_processes,
+            chunk_size=chunk_size,
+            progress_bar=progress_bar,
+            timeout=timeout,
+            return_df=return_df,
+            split_method=split_method,        
+            verbosity=verbosity
+        )
+
+
+    def _trace_rays_single(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
+                        source="photons", deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, 
+                        seed: int = None, join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                        progress_bar=True, timeout=3600, return_df=False, 
+                        split_method="auto",
+                        verbosity=VerbosityLevel.BASIC,  
+                        ) -> pd.DataFrame or None:
+        """
+        Internal method for single-archive ray tracing (non-grouped).
+        See trace_rays() for full documentation.
+
+        Parameters:
+        -----------
+        (Same as trace_rays)
+        
+        Returns:
+        --------
+        pd.DataFrame or None
+            Combined DataFrame of all processed results if return_df=True,
+            otherwise None. Each row represents a traced ray.
         """
         # Validate input parameters
         if opm is not None and opm_file is not None:
@@ -728,6 +885,19 @@ class Lens:
         if opm_file is not None and not Path(opm_file).exists():
             raise FileNotFoundError(f"Optical model file not found: {opm_file}")
         
+        if source not in ["hits", "photons"]:
+            raise ValueError(f"Invalid source: '{source}'. Must be 'hits' or 'photons'")
+        
+        if source == "hits":
+            if (deadtime is None or deadtime <= 0) and blob <= 0:
+                raise ValueError("source='hits' requires either deadtime > 0 or blob > 0")
+        
+        if deadtime is not None and deadtime <= 0:
+            raise ValueError(f"deadtime must be positive, got {deadtime}")
+        
+        if blob < 0:
+            raise ValueError(f"blob must be non-negative, got {blob}")
+
         # Set up directories
         sim_photons_dir = self.archive / "SimPhotons"
         traced_photons_dir = self.archive / "TracedPhotons"
@@ -746,6 +916,7 @@ class Lens:
 
         if verbosity > VerbosityLevel.BASIC:
             print(f"Found {len(valid_files)} valid simulation files to process")
+            print(f"Workflow: {source}")
 
         # Handle optical model setup
         temp_opm_file = None
@@ -795,7 +966,7 @@ class Lens:
             file_iter = tqdm(valid_files, desc=file_desc, 
                             disable=not progress_bar or verbosity == VerbosityLevel.QUIET)
             
-            for csv_file in file_iter:
+            for file_idx, csv_file in enumerate(file_iter):
                 if verbosity >= VerbosityLevel.DETAILED:
                     print(f"\nProcessing file: {csv_file.name}")
 
@@ -819,6 +990,20 @@ class Lens:
                     if verbosity > VerbosityLevel.BASIC:
                         print(f"Skipping {csv_file.name}: missing columns {missing_cols}")
                     continue
+
+                # Check for pulse_id when split_method="event"
+                if source == "hits" and split_method == "event" and 'pulse_id' not in df.columns:
+                    if verbosity > VerbosityLevel.BASIC:
+                        print(f"Warning: {csv_file.name} missing pulse_id column required for split_method='event'")
+
+                # Validate nz and pz columns
+                nz_pz_cols = ['nz', 'pz']
+                missing_nz_pz = [col for col in nz_pz_cols if col not in df.columns]
+                if missing_nz_pz:
+                    if verbosity > VerbosityLevel.BASIC:
+                        print(f"Warning: {csv_file.name} missing columns {missing_nz_pz}. Setting nz and pz to NaN.")
+                    for col in missing_nz_pz:
+                        df[col] = np.nan
 
                 # Get wavelengths for the optical model
                 wvl = df["wavelength"].value_counts().to_frame().reset_index()
@@ -893,24 +1078,175 @@ class Lens:
                             pool.join()
                             
                 except Exception as e:
-                    if verbosity > VerbosityLevel.BASIC:
+                    if verbosity >= VerbosityLevel.DETAILED:
                         print(f"Error in processing {csv_file.name}: {str(e)}")
                         print("Consider using n_processes=1 for debugging")
                     raise
 
                 # Create result DataFrame from processed chunks
                 result_df = self._create_result_dataframe(results_with_indices, df, join, verbosity)
-                result_df["toa2"] = df["toa"] if "toa" in df.columns else np.nan
+
+                # Verify alignment by checking row count
+                if len(result_df) != len(df):
+                    if verbosity > VerbosityLevel.QUIET:
+                        print(f"  ERROR: Row count mismatch. Expected {len(df)}, got {len(result_df)}")
+                    continue
+
+                # Verify ID alignment
+                if verbosity >= VerbosityLevel.DETAILED:
+                    if 'id' in result_df.columns and 'id' in df.columns:
+                        id_matches = (result_df['id'].values == df['id'].values).sum()
+                        neutron_matches = (result_df['neutron_id'].values == df['neutron_id'].values).sum() if 'neutron_id' in result_df.columns else 0
+                        pulse_matches = (result_df['pulse_id'].values == df['pulse_id'].values).sum() if 'pulse_id' in result_df.columns else 0
+                        
+                        if id_matches != len(df):
+                            print(f"  WARNING: ID alignment check: {id_matches}/{len(df)} match")
+                        if neutron_matches != len(df):
+                            print(f"  WARNING: neutron_id alignment: {neutron_matches}/{len(df)} match")
+                        if pulse_matches != len(df):
+                            print(f"  WARNING: pulse_id alignment: {pulse_matches}/{len(df)} match")
+                        
+                        if id_matches == len(df) and neutron_matches == len(df) and pulse_matches == len(df):
+                            print(f"  ✓ Perfect ID alignment verified: all {len(df)} rows match")
+
+                # Process based on source workflow
+                if source == "hits":
+                    # Hits workflow: apply saturation and write TPX3 files
+                    # Initialize in_tpx3 column as False (will be marked True for surviving rows)
+                    result_df['in_tpx3'] = False
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Applying saturation with deadtime={deadtime} ns, blob={blob} pixels, decay_time={decay_time}ns")
+                    
+                    # Ensure required columns for saturation
+                    required_cols = ['x2', 'y2', 'z2', 'toa2', 'id', 'neutron_id']
+                    missing_cols = [col for col in required_cols if col not in result_df.columns]
+                    if missing_cols:
+                        if verbosity > VerbosityLevel.QUIET:
+                            print(f"Cannot apply saturation to {csv_file.name}: missing columns {missing_cols}")
+                        continue
+                    
+                    # Store original indices before saturation
+                    result_df['_original_index'] = result_df.index
+                    
+                    # Call saturate_photons
+                    saturated_df = self.saturate_photons(
+                        data=result_df,
+                        deadtime=deadtime,
+                        blob=blob,
+                        blob_variance=blob_variance,
+                        seed=seed,
+                        output_format="photons",
+                        min_tot=1.0,
+                        decay_time=decay_time,
+                        verbosity=verbosity
+                    )
+                    
+                    if saturated_df is None or saturated_df.empty:
+                        if verbosity > VerbosityLevel.QUIET:
+                            print(f"  Saturation produced no results for {csv_file.name}")
+                        result_df['in_tpx3'] = False
+                    else:
+                        # Mark rows that survived saturation
+                        if '_original_index' in saturated_df.columns:
+                            survived_indices = saturated_df['_original_index'].values
+                            result_df.loc[survived_indices, 'in_tpx3'] = True
+                        
+                        # Update result_df with saturated data
+                        result_df = saturated_df
+                        
+                        # Sort by time to restore chronological order
+                        result_df = result_df.sort_values('toa2').reset_index(drop=True)
+                        
+                        # Remove temporary index column
+                        if '_original_index' in result_df.columns:
+                            result_df = result_df.drop(columns=['_original_index'])
+                        
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"  After saturation and sorting: {len(result_df)} rows")
+                            tpx3_count = result_df['in_tpx3'].sum() if 'in_tpx3' in result_df.columns else len(result_df)
+                            print(f"  Rows marked for TPX3: {tpx3_count}")
+
+                    # Filter columns to keep for hits workflow
+                    desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'photon_count', 'time_diff', 
+                                    'id', 'neutron_id', 'pulse_id', 'pulse_time_ns', 'in_tpx3']
+                    
+                    columns_to_keep = [col for col in desired_columns if col in result_df.columns]
+                    result_df = result_df[columns_to_keep]
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Filtered to columns: {columns_to_keep}")
+
+                    # Save results to file
+                    output_file = traced_photons_dir / f"traced_{csv_file.name}"
+                    result_df.to_csv(output_file, index=False)
+
+                    # Write TPX3 files
+                    file_index = int(csv_file.stem.split('_')[-1])
+                    
+                    if 'in_tpx3' in result_df.columns:
+                        tpx3_data = result_df[result_df['in_tpx3']].copy()
+                    else:
+                        tpx3_data = result_df.copy()
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"  Warning: 'in_tpx3' column not found, using all rows for TPX3")
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Writing {len(tpx3_data)} rows to TPX3 file")
+                    
+                    self._write_tpx3(
+                        traced_data=tpx3_data,
+                        chip_index=0,
+                        verbosity=verbosity,
+                        sensor_size=256,
+                        split_method=split_method,
+                        clean=(file_idx == 0),
+                        file_index=file_index
+                    )
+                
+                else:  # source == "photons"
+                    # Photons workflow: save traced photons with tof for direct import
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Preparing photons for direct import (no saturation)")
+                    
+                    # Calculate tof: time from pulse start to photon arrival, in seconds
+                    if 'pulse_time_ns' in result_df.columns and 'toa2' in result_df.columns:
+                        result_df['tof'] = (result_df['toa2'] - result_df['pulse_time_ns']) / 1e9  # ns to seconds
+                    else:
+                        result_df['tof'] = 0.0  # Fallback if pulse_time_ns not available
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"  Warning: pulse_time_ns not available, setting tof=0")
+                    
+                    # Filter columns for photons workflow - keep format compatible with empir_import_photons
+                    desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'tof', 
+                                    'id', 'neutron_id', 'pulse_id', 'pulse_time_ns']
+                    
+                    columns_to_keep = [col for col in desired_columns if col in result_df.columns]
+                    result_df = result_df[columns_to_keep]
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Filtered to columns: {columns_to_keep}")
+
+                    # Save results to file
+                    output_file = traced_photons_dir / f"traced_{csv_file.name}"
+                    result_df.to_csv(output_file, index=False)
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Saved {len(result_df)} traced photons ready for import")
+                    
+                    # Convert to photonFiles format immediately
+                    photon_files_dir = self.archive / "photonFiles"
+                    photon_files_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    self._run_import_photons(
+                        traced_file=output_file,
+                        photon_files_dir=photon_files_dir,
+                        verbosity=verbosity
+                    )
 
                 # Print statistics if requested
-                if print_stats and verbosity >= VerbosityLevel.BASIC:
+                if print_stats and verbosity > VerbosityLevel.BASIC:
                     self._print_tracing_stats(csv_file.name, df, result_df)
-
-                # Save results to file
-                output_file = traced_photons_dir / f"traced_{csv_file.name}"
-                result_df.to_csv(output_file, index=False)
-                if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"  Saved results to: {output_file}")
 
                 if return_df:
                     all_results.append(result_df)
@@ -918,27 +1254,673 @@ class Lens:
             # Return combined results if requested
             if return_df and all_results:
                 combined_df = pd.concat(all_results, ignore_index=True)
-                if verbosity > VerbosityLevel.BASIC:
+                if verbosity >= VerbosityLevel.DETAILED:
                     print(f"\nReturning combined DataFrame with {len(combined_df)} rows")
                 return combined_df
 
-            if verbosity > VerbosityLevel.BASIC:
+            if verbosity >= VerbosityLevel.DETAILED:
                 print(f"\nProcessing complete. Results saved to: {traced_photons_dir}")
             
             return None
 
         finally:
             pass
-            # # Clean up temporary files
-            # if temp_opm_file and temp_opm_file.exists():
-            #     try:
-            #         temp_opm_file.unlink()
-            #         if verbosity >= VerbosityLevel.DETAILED:
-            #             print(f"Cleaned up temporary file: {temp_opm_file}")
-            #     except Exception as e:
-            #         if verbosity >= VerbosityLevel.DETAILED:
-            #             print(f"Warning: Could not clean up {temp_opm_file}: {e}")
 
+
+    def _trace_rays_grouped(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
+                            source="photons", deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, 
+                            seed: int = None, join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                            progress_bar=True, timeout=3600, return_df=False, split_method="auto",
+                            verbosity=VerbosityLevel.BASIC) -> pd.DataFrame or None:
+        """
+        Internal method for grouped ray tracing. 
+        Trace rays for each group created by groupby() with all trace_rays options.
+        
+        All parameters are identical to trace_rays(). See trace_rays() for full documentation.
+        
+        Raises:
+            ValueError: If groupby() hasn't been called first
+        """
+        if not hasattr(self, '_groupby_dir') or not hasattr(self, '_groupby_labels'):
+            raise ValueError("Must call groupby() before trace_rays() for grouped operation")
+        
+        groupby_dir = self._groupby_dir
+        labels = self._groupby_labels
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"\n{'='*60}")
+            print(f"Tracing rays for {len(labels)} groups in: {groupby_dir.name}")
+            print(f"Workflow: {source}")
+            print(f"{'='*60}\n")
+        
+        # Store original archive
+        original_archive = self.archive
+        all_group_results = []
+        
+        # Iterate through each group
+        for i, label in enumerate(tqdm(labels, desc="Processing groups", disable=(verbosity == VerbosityLevel.QUIET))):
+            bin_dir = groupby_dir / label
+            
+            if not bin_dir.exists():
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Skipping non-existent group: {label}")
+                continue
+            
+            # Check if SimPhotons folder exists and has data
+            simphotons_dir = bin_dir / "SimPhotons"
+            if not simphotons_dir.exists() or not list(simphotons_dir.glob("sim_data_*.csv")):
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Skipping group '{label}': no simulation data")
+                continue
+            
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"\n{'─'*60}")
+                print(f"Group {i+1}/{len(labels)}: {label}")
+                print(f"{'─'*60}")
+            
+            # Temporarily change archive to this group's directory
+            self.archive = bin_dir
+            
+            try:
+                # Reload data for this group
+                csv_files = sorted(simphotons_dir.glob("sim_data_*.csv"))
+                valid_dfs = []
+                for csv_file in csv_files:
+                    try:
+                        if csv_file.stat().st_size > 100:
+                            df = pd.read_csv(csv_file)
+                            if not df.empty:
+                                valid_dfs.append(df)
+                    except Exception as e:
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"Warning: Skipping {csv_file.name}: {e}")
+                
+                if valid_dfs:
+                    self.data = pd.concat(valid_dfs, ignore_index=True)
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Loaded {len(self.data)} photons for group '{label}'")
+                    
+                    # Trace rays for this group with all parameters
+                    group_result = self._trace_rays_single(
+                        opm=opm,
+                        opm_file=opm_file,
+                        zscan=zscan,
+                        zfine=zfine,
+                        fnumber=fnumber,
+                        source=source,
+                        deadtime=deadtime,
+                        blob=blob,
+                        blob_variance=blob_variance,
+                        decay_time=decay_time,          
+                        seed=seed,              
+                        join=join,
+                        print_stats=print_stats,
+                        n_processes=n_processes,
+                        chunk_size=chunk_size,
+                        progress_bar=progress_bar,
+                        timeout=timeout,
+                        return_df=return_df,
+                        split_method=split_method,
+                        verbosity=verbosity
+                    )
+                    
+                    if return_df and group_result is not None:
+                        all_group_results.append(group_result)
+                    
+                    if verbosity > VerbosityLevel.BASIC:
+                        print(f"✓ Completed group '{label}'")
+                else:
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  No valid data in group '{label}'")
+            
+            except Exception as e:
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"✗ Error processing group '{label}': {e}")
+                if verbosity >= VerbosityLevel.DETAILED:
+                    import traceback
+                    traceback.print_exc()
+            
+            finally:
+                # Restore original archive
+                self.archive = original_archive
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"\n{'='*60}")
+            print(f"✓ Completed all {len(labels)} groups")
+            print(f"{'='*60}\n")
+        
+        # Return combined results if requested
+        if return_df and all_group_results:
+            combined_df = pd.concat(all_group_results, ignore_index=True)
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"\nReturning combined DataFrame with {len(combined_df)} total rows from all groups")
+            return combined_df
+        
+        return None
+
+
+    def _run_import_photons(self, traced_file: Path, photon_files_dir: Path, 
+                                        verbosity: VerbosityLevel) -> None:
+        """
+        Convert a single traced photon CSV file to empirphot binary format (.empirphot).
+        
+        This method reads a traced photon CSV file, formats it according to EMPIR requirements,
+        and uses empir_import_photons to create the binary .empirphot file.
+        
+        The input format expects:
+        - pixel_x, pixel_y: Pixel coordinates (already in pixels)
+        - toa2: Time of arrival in nanoseconds (will be converted to seconds)
+        - pulse_time_ns: Trigger/pulse time in nanoseconds (for calculating t_relToExtTrigger)
+        
+        Args:
+            traced_file: Path to the traced photon CSV file (e.g., traced_sim_data_0.csv)
+            photon_files_dir: Directory where .empirphot files will be saved
+            verbosity: Controls output level
+        
+        Raises:
+            ValueError: If required columns are missing from traced photon file
+        """
+        try:
+            # Read traced photons
+            df = pd.read_csv(traced_file)
+            
+            if df.empty:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"    Skipping empty traced file: {traced_file.name}")
+                return
+            
+            # Validate required columns
+            required_cols = ['pixel_x', 'pixel_y', 'toa2']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                raise ValueError(
+                    f"Traced photon file {traced_file.name} missing required columns: {missing_cols}\n"
+                    f"Available columns: {list(df.columns)}\n"
+                    f"Expected columns: {required_cols}"
+                )
+            
+            # Drop rows with NaN in essential columns
+            df = df[['pixel_x', 'pixel_y', 'toa2', 'pulse_time_ns']].dropna()
+            
+            # Convert times from nanoseconds to seconds
+            df['t_s'] = df['toa2'] * 1e-9
+            
+            # Calculate time relative to external trigger (pulse_time_ns)
+            if 'pulse_time_ns' in df.columns:
+                df['t_relToExtTrigger_s'] = (df['toa2'] - df['pulse_time_ns']) * 1e-9
+            else:
+                # Fallback: use absolute time if pulse_time_ns not available
+                df['t_relToExtTrigger_s'] = df['t_s']
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"    Warning: pulse_time_ns not found, using absolute time for t_relToExtTrigger")
+            
+            # Prepare DataFrame in EMPIR import format
+            # Column names must match exactly what empir_import_photons expects
+            import_df = pd.DataFrame({
+                'x [px]': df['pixel_x'].astype(np.float64),
+                'y [px]': df['pixel_y'].astype(np.float64),
+                't [s]': df['t_s'].astype(np.float64),
+                't_relToExtTrigger [s]': df['t_relToExtTrigger_s'].astype(np.float64)
+            })
+            
+            
+            if import_df.empty:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"    No photons in valid time range (0-1s) for {traced_file.name}")
+                return
+            
+            # Sort by time
+            import_df = import_df.sort_values('t [s]')
+            
+            # Create ImportedPhotons directory for intermediate CSV
+            imported_photons_dir = self.archive / "ImportedPhotons"
+            imported_photons_dir.mkdir(exist_ok=True)
+            
+            # Extract the data index from filename
+            stem = traced_file.stem
+            if stem.startswith('traced_sim_data_'):
+                data_index = stem.replace('traced_sim_data_', '')
+            elif stem.startswith('traced_data_'):
+                data_index = stem.replace('traced_data_', '')
+            else:
+                # Fallback: try to extract number from end
+                data_index = ''.join(filter(str.isdigit, stem))
+            
+            # Save intermediate CSV for empir_import_photons
+            output_csv = imported_photons_dir / f"imported_traced_data_{data_index}.csv"
+            import_df.to_csv(output_csv, index=False)
+            
+            # Output empirphot binary file
+            output_file = photon_files_dir / f"traced_data_{data_index}.empirphot"
+            
+            # Use empir_import_photons to create the binary .empirphot file
+            import subprocess
+            cmd = [
+                str(self.empir_import_photons),
+                str(output_csv),
+                str(output_file),
+                "csv"
+            ]
+            
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"    Running: {' '.join(cmd)}")
+                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            else:
+                result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            
+            if result.returncode != 0:
+                raise RuntimeError(f"empir_import_photons failed for {traced_file.name}")
+            
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"    ✓ Converted {traced_file.name} → {output_file.name} ({len(import_df)} photons)")
+        
+        except Exception as e:
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"    ✗ Error converting {traced_file.name}: {e}")
+            raise
+
+    def _write_tpx3(
+        self,
+        traced_data: pd.DataFrame = None,
+        chip_index: int = 0,
+        verbosity: int = 1,
+        sensor_size: int = 256,
+        split_method: str = "auto",
+        clean: bool = True,
+        file_index: int = None
+    ):
+        """
+        Convert traced photon data to valid TPX3 binary files, following the SERVAL TPX3 raw file format.
+        """
+        # Constants
+        TICK_NS = 1.5625  # ToA tick size (1.5625 ns)
+        MAX_TDC_TIMESTAMP_S = (2**32) * 25e-9  # ~107.37 seconds
+        MAX_CHUNK_BYTES = 65535
+        TIMER_TICK_NS = 409.6  # GTS timer tick
+        PACKET_SIZE = 8
+        
+        def encode_gts_pair(timer_value):
+            """Encode Global Timestamp (GTS) packet pair."""
+            timer_value = int(timer_value) & ((1 << 48) - 1)
+            lsb_timer = timer_value & 0xFFFFFFFF
+            lsb_word = (0x4 << 60) | (0x4 << 56) | (lsb_timer << 16)
+            msb_word = (0x4 << 60) | (0x5 << 56) | ((timer_value >> 32) & 0xFFFF) << 16
+            return struct.pack("<Q", lsb_word) + struct.pack("<Q", msb_word)
+        
+        def encode_tdc_packet(trigger_time_ns, trigger_counter, tdc_channel=1, edge_type='rising'):
+            """
+            Encode TDC trigger packet following TPX3 format.
+            
+            From C++ decoder:
+            coarsetime = (temp >> 12) & 0xFFFFFFFF  (32 bits in 25ns units)
+            tmpfine = (temp >> 5) & 0xF  (4 bits, clock phase 1-12)
+            trigtime_fine = (temp & 0x0E00) | (((tmpfine-1) << 9) / 12)
+            tdc_time = coarsetime*25e-9 + trigtime_fine*(25/4096)*1e-9
+            """
+            # Determine header
+            if tdc_channel == 1:
+                header = 0x6F if edge_type == 'rising' else 0x6A
+            else:
+                header = 0x6E if edge_type == 'rising' else 0x6B
+            
+            # Coarse time: 25ns resolution (32 bits)
+            coarsetime = int(trigger_time_ns / 25.0) & 0xFFFFFFFF
+            
+            # Fine time: sub-25ns component
+            fine_ns = trigger_time_ns - (coarsetime * 25.0)
+            
+            # Convert to 12-bit trigtime_fine (0-4095 representing 0-25ns)
+            trigtime_fine = int(round(fine_ns * 4096.0 / 25.0)) & 0xFFF
+            
+            # Extract upper 3 bits (bits 9-11)
+            fine_upper = (trigtime_fine >> 9) & 0x7
+            
+            # Extract lower 9 bits
+            fine_lower = trigtime_fine & 0x1FF
+            
+            # Reverse tmpfine encoding: fine_lower ≈ ((tmpfine-1) << 9) / 12
+            # So: tmpfine ≈ (fine_lower * 12 / 512) + 1
+            if fine_lower == 0:
+                tmpfine = 1
+            else:
+                tmpfine = int(round((fine_lower * 12.0 / 512.0) + 1.0))
+                tmpfine = max(1, min(12, tmpfine))
+            
+            # Build 64-bit TDC packet
+            tdc_word = (
+                (int(header) << 56) |
+                ((trigger_counter & 0xFFF) << 44) |
+                ((coarsetime & 0xFFFFFFFF) << 12) |
+                ((fine_upper & 0x7) << 9) |
+                ((tmpfine & 0xF) << 5)
+            )
+            
+            return struct.pack("<Q", tdc_word)
+        
+        if traced_data is None or len(traced_data) == 0:
+            if verbosity >= 2:
+                print("No traced photon data provided")
+            return
+        
+        df = traced_data.copy()
+        
+        # Sort by neutron_id and toa2
+        if "neutron_id" in df.columns:
+            df = df.sort_values(by=["neutron_id", "toa2"]).reset_index(drop=True)
+        
+        if verbosity >= 2:
+            print(f"\nProcessing {len(df)} events for TPX3 export")
+        
+        # Validate required columns
+        required = ["pixel_x", "pixel_y", "toa2", "time_diff", "pulse_id", "pulse_time_ns"]
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            if verbosity >= 2:
+                print(f"Missing required columns: {missing}")
+            return
+        
+        # Filter out invalid rows (NaN values and out-of-range coordinates)
+        valid_mask = (
+            df["pixel_x"].notna() & 
+            df["pixel_y"].notna() & 
+            df["toa2"].notna() & 
+            df["time_diff"].notna() &
+            (df["pixel_x"] >= 0) & (df["pixel_x"] < sensor_size) &
+            (df["pixel_y"] >= 0) & (df["pixel_y"] < sensor_size)
+        )
+        n_invalid = (~valid_mask).sum()
+        if n_invalid > 0:
+            n_nan = df[["pixel_x", "pixel_y", "toa2", "time_diff"]].isna().any(axis=1).sum()
+            n_oob = ((df["pixel_x"] < 0) | (df["pixel_x"] >= sensor_size) | 
+                     (df["pixel_y"] < 0) | (df["pixel_y"] >= sensor_size)).sum()
+            if verbosity >= 2:
+                print(f"  Filtering out {n_invalid} invalid rows:")
+                print(f"    - {n_nan} with NaN values")
+                print(f"    - {n_oob} with out-of-range coordinates (must be 0-{sensor_size-1})")
+            df = df[valid_mask].reset_index(drop=True)
+        
+        if len(df) == 0:
+            if verbosity >= 1:
+                print("  No valid data after filtering")
+            return
+        
+        # Setup output directory
+        out_dir = self.archive / "tpx3Files"
+        if out_dir.exists() and clean and (file_index is None or file_index == 0):
+            shutil.rmtree(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        base_name = f"traced_data_{file_index}" if file_index is not None else "traced_data"
+        
+        # Build trigger time dictionary
+        trigger_time_dict = {}
+        for pulse_id in df['pulse_id'].dropna().unique():
+            pulse_rows = df[df['pulse_id'] == pulse_id]
+            if not pulse_rows.empty:
+                trigger_time_ns = pulse_rows['pulse_time_ns'].iloc[0]
+                if trigger_time_ns > MAX_TDC_TIMESTAMP_S * 1e9:
+                    if verbosity >= 2:
+                        print(f"  Warning: pulse_id {pulse_id} time exceeds TDC range")
+                    trigger_time_ns = MAX_TDC_TIMESTAMP_S * 1e9
+                trigger_time_dict[int(pulse_id)] = trigger_time_ns
+        
+        if verbosity >= 2:
+            print(f"  Triggers: {len(trigger_time_dict)}")
+            if trigger_time_dict:
+                sample = list(trigger_time_dict.items())[:3]
+                print(f"  Sample: {[(k, f'{v:.1f}ns') for k, v in sample]}")
+        
+        # Extract and convert data (no clipping - already filtered)
+        px = df["pixel_x"].to_numpy().astype(np.int64)
+        py = df["pixel_y"].to_numpy().astype(np.int64)
+        toa_ns = df["toa2"].to_numpy().astype(float)
+        tot_ns = np.maximum(df["time_diff"].to_numpy().astype(float), 1.0)
+        
+        # Convert ToA to 1.5625ns ticks
+        toa_ticks = np.round(toa_ns / TICK_NS).astype(np.int64)
+        
+        # Decompose ToA into packet fields
+        spidr_time = ((toa_ticks >> 18) & 0xFFFF).astype(np.int64)  # 16 bits
+        coarse_toa = ((toa_ticks >> 4) & 0x3FFF).astype(np.int64)
+        ftoa = (15 - (toa_ticks & 0xF)).astype(np.int64)
+        ftoa = np.clip(ftoa, 0, 15)
+        
+        # Convert ToT to ticks (10-bit, ~1ns resolution)
+        tot_ticks = np.clip(np.round(tot_ns).astype(np.int64), 1, 0x3FF)
+        
+        # Encode PixAddr using TPX3 hierarchical addressing scheme
+        # C++ decoder extracts from 64-bit word at these positions:
+        #   dcol = (word >> 52) & 0x7F    (bits 58-52, 7 bits)
+        #   spix = (word >> 45) & 0x3F    (bits 50-45, 6 bits)
+        #   pix  = (word >> 44) & 0x7     (bits 46-44, 3 bits)
+        # Then reconstructs: X = dcol + pix/4,  Y = spix + (pix & 3)
+        #
+        # So we need to encode directly into those bit positions:
+        pix = (((px & 0x1) << 2) | (py & 0x3)).astype(np.uint64)  # 3 bits: X[0] and Y[1:0]
+        dcol = (px >> 1).astype(np.uint64)  # 7 bits: X / 2
+        spix = (py >> 2).astype(np.uint64)  # 6 bits: Y / 4
+        
+        # Timer for GTS
+        timer_ticks = (toa_ticks * TICK_NS / TIMER_TICK_NS).astype(np.int64)
+        
+        if verbosity >= 2:
+            print(f"  ToA: {toa_ns.min():.1f} - {toa_ns.max():.1f} ns")
+            print(f"  ToT: {tot_ns.min():.1f} - {tot_ns.max():.1f} ns")
+            print(f"  Pixels: x[{px.min()}, {px.max()}], y[{py.min()}, {py.max()}]")
+            
+            # Verify encoding
+            print(f"  Encoding verification:")
+            for i in [0, min(5, len(px)-1)]:
+                # Simulate what decoder will extract
+                decoded_dcol = dcol[i]
+                decoded_spix = spix[i]
+                decoded_pix = pix[i]
+                decoded_x = decoded_dcol + (decoded_pix >> 2)
+                decoded_y = decoded_spix + (decoded_pix & 0x3)
+                match = "✓" if (decoded_x == px[i] and decoded_y == py[i]) else "✗"
+                print(f"    ({px[i]},{py[i]}) → dcol={dcol[i]}, spix={spix[i]}, pix={pix[i]} → ({decoded_x},{decoded_y}) {match}")
+        
+        # Encode pixel packets
+        pixel_packets = []
+        for j in range(len(df)):
+            # Build 64-bit pixel packet
+            # Based on reverse engineering from actual decoder output:
+            # The PixAddr field needs special encoding
+            # Treating it as a 16-bit field at bits 59-44
+            
+            # Standard TPX3: PixAddr encodes doublecolumn, superpixel, pixel
+            # dcol (7 bits) | spix (6 bits) | pix (3 bits) = 16 bits
+            pix_addr_16bit = ((int(dcol[j]) & 0x7F) << 9) | ((int(spix[j]) & 0x3F) << 3) | (int(pix[j]) & 0x7)
+            
+            pixel_word = (
+                (0xB << 60) |
+                ((pix_addr_16bit & 0xFFFF) << 44) |
+                ((int(coarse_toa[j]) & 0x3FFF) << 30) |
+                ((int(tot_ticks[j]) & 0x3FF) << 20) |
+                ((int(ftoa[j]) & 0xF) << 16) |
+                (int(spidr_time[j]) & 0xFFFF)
+            )
+            pixel_packets.append(struct.pack("<Q", pixel_word))
+        
+        # Determine file groups
+        file_groups = []
+        
+        if split_method == "event" and "neutron_id" in df.columns:
+            neutron_ids = df["neutron_id"].to_numpy()
+            pulse_ids = df["pulse_id"].to_numpy()
+            
+            for nid in np.unique(neutron_ids):
+                indices = np.where(neutron_ids == nid)[0]
+                if len(indices) > 0:
+                    pulse_id = pulse_ids[indices[0]]
+                    unique_pulses = np.unique(pulse_ids[indices])
+                    if len(unique_pulses) > 1 and verbosity >= 2:
+                        print(f"  Warning: neutron {nid} spans multiple pulses: {unique_pulses}")
+                    
+                    trigger_time_ns = trigger_time_dict.get(int(pulse_id))
+                    
+                    file_groups.append({
+                        'start_idx': int(indices[0]),
+                        'end_idx': int(indices[-1] + 1),
+                        'neutron_id': int(nid),
+                        'pulse_id': int(pulse_id),
+                        'trigger_time_ns': trigger_time_ns
+                    })
+            
+            if verbosity >= 2:
+                print(f"  Files: {len(file_groups)} (one per neutron)")
+                
+        elif "neutron_id" in df.columns:
+            neutron_ids = df["neutron_id"].to_numpy()
+            pulse_ids = df["pulse_id"].to_numpy()
+            
+            boundaries = [0]
+            for i in range(1, len(neutron_ids)):
+                if neutron_ids[i] != neutron_ids[i-1]:
+                    boundaries.append(i)
+            boundaries.append(len(df))
+            
+            current_start = 0
+            current_size = 16
+            current_triggers = set()
+            
+            for i in range(len(boundaries) - 1):
+                start = boundaries[i]
+                end = boundaries[i + 1]
+                
+                n_size = (end - start) * PACKET_SIZE
+                n_pulses = set(pulse_ids[start:end])
+                new_triggers = n_pulses - current_triggers
+                n_size += len(new_triggers) * 8
+                
+                if current_size + n_size > MAX_CHUNK_BYTES and start > current_start:
+                    group_pulses = set(pulse_ids[current_start:start])
+                    group_triggers = {
+                        int(pid): trigger_time_dict.get(int(pid))
+                        for pid in group_pulses
+                        if int(pid) in trigger_time_dict
+                    }
+                    
+                    file_groups.append({
+                        'start_idx': current_start,
+                        'end_idx': start,
+                        'neutron_id': None,
+                        'pulse_ids': group_pulses,
+                        'trigger_times': group_triggers
+                    })
+                    
+                    current_start = start
+                    current_size = 16 + n_size
+                    current_triggers = n_pulses.copy()
+                else:
+                    current_size += n_size
+                    current_triggers.update(n_pulses)
+            
+            if current_start < len(df):
+                group_pulses = set(pulse_ids[current_start:])
+                group_triggers = {
+                    int(pid): trigger_time_dict.get(int(pid))
+                    for pid in group_pulses
+                    if int(pid) in trigger_time_dict
+                }
+                
+                file_groups.append({
+                    'start_idx': current_start,
+                    'end_idx': len(df),
+                    'neutron_id': None,
+                    'pulse_ids': group_pulses,
+                    'trigger_times': group_triggers
+                })
+            
+            if verbosity >= 2:
+                print(f"  Files: {len(file_groups)} (auto-grouped)")
+        else:
+            file_groups.append({
+                'start_idx': 0,
+                'end_idx': len(df),
+                'neutron_id': None,
+                'pulse_id': None,
+                'trigger_time_ns': None
+            })
+        
+        # Write files
+        files_written = []
+        for file_idx, group in enumerate(file_groups):
+            start_idx = group['start_idx']
+            end_idx = group['end_idx']
+            
+            # Initialize with GTS pair
+            if split_method == "event":
+                trigger_ns = group.get('trigger_time_ns')
+                timer = int(trigger_ns / TIMER_TICK_NS) if trigger_ns else timer_ticks[start_idx]
+            else:
+                triggers = group.get('trigger_times', {})
+                timer = int(min(triggers.values()) / TIMER_TICK_NS) if triggers else timer_ticks[start_idx]
+            
+            content = encode_gts_pair(timer)
+            
+            # Add TDC triggers
+            n_triggers = 0
+            
+            if split_method == "event":
+                trigger_ns = group.get('trigger_time_ns')
+                pulse_id = group.get('pulse_id')
+                
+                if trigger_ns is not None and pulse_id is not None:
+                    tdc_packet = encode_tdc_packet(trigger_ns, pulse_id, 1, 'rising')
+                    content += tdc_packet
+                    n_triggers = 1
+                    
+                    if verbosity >= 2:
+                        first_toa = toa_ns[start_idx]
+                        dt = first_toa - trigger_ns
+                        print(f"  File {file_idx + 1}: TDC @ {trigger_ns:.1f}ns, first hit @ {first_toa:.1f}ns (Δt={dt:.1f}ns)")
+            else:
+                triggers = group.get('trigger_times', {})
+                
+                for pulse_id, trigger_ns in sorted(triggers.items()):
+                    if trigger_ns is not None:
+                        tdc_packet = encode_tdc_packet(trigger_ns, pulse_id, 1, 'rising')
+                        content += tdc_packet
+                        n_triggers += 1
+                
+                if verbosity >= 2 and n_triggers > 0:
+                    print(f"  File {file_idx + 1}: {n_triggers} TDC trigger(s)")
+            
+            # Add pixel packets
+            for j in range(start_idx, end_idx):
+                content += pixel_packets[j]
+            
+            # Determine filename
+            neutron_id = group.get('neutron_id')
+            if split_method == "event" and neutron_id is not None:
+                out_path = out_dir / f"{base_name}_neutron{neutron_id:06d}.tpx3"
+            elif len(file_groups) > 1:
+                out_path = out_dir / f"{base_name}_part{file_idx + 1:03d}.tpx3"
+            else:
+                out_path = out_dir / f"{base_name}.tpx3"
+            
+            # Write file
+            with open(out_path, "wb") as fh:
+                file_size = len(content)
+                header = struct.pack("<4sBBH", b"TPX3", chip_index & 0xFF, 0, file_size & 0xFFFF)
+                fh.write(header)
+                fh.write(content)
+            
+            files_written.append((out_path, end_idx - start_idx, n_triggers))
+            
+            if verbosity >= 2:
+                info = f"neutron {neutron_id}" if neutron_id else f"part {file_idx + 1}"
+                trig_info = f", {n_triggers} trig" if n_triggers else ""
+                print(f"  Wrote {out_path.name}: {end_idx - start_idx} events{trig_info}")
+        
+        if verbosity >= 2:
+            total_trigs = sum(t for _, _, t in files_written)
+            if len(files_written) == 2:
+                print(f"✅ {files_written[0][0].name}: {files_written[0][1]} events, {files_written[0][2]} triggers")
+            else:
+                print(f"✅ {len(files_written)} files, {total_trigs} triggers total")
 
     def _align_chunk_results(self, chunk_result, indices, chunk_idx, verbosity):
         """
@@ -967,638 +1949,692 @@ class Lens:
                 print(f"    Warning: Chunk {chunk_idx} returned {len(chunk_result)} "
                     f"results but expected {len(indices)}")
             if len(chunk_result) < len(indices):
-                # Pad with None for missing results
                 chunk_result = chunk_result + [None] * (len(indices) - len(chunk_result))
             else:
-                # Truncate excess results
                 chunk_result = chunk_result[:len(indices)]
         
         return list(zip(chunk_result, indices))
 
-
     def _create_result_dataframe(self, results_with_indices, original_df, join, verbosity):
         """
-        Create a DataFrame from traced ray results.
+        Create a DataFrame from traced ray results with 1:1 row correspondence to original data.
+        
+        CRITICAL: Maintains exact row order and count. Row i in output = Row i in input.
+        If a photon fails to trace, that row will have NaN for x2, y2, z2 but keep original IDs.
         
         Parameters:
         -----------
         results_with_indices : list
-            List of (result, original_index) tuples
+            List of (trace_result, original_row_index) tuples
         original_df : pd.DataFrame
             Original simulation data
         join : bool
-            Whether to join with original data
+            If True, include original ray definition columns (x, y, z, dx, dy, dz, wavelength)
         verbosity : VerbosityLevel
-            Current verbosity level
+            Logging verbosity
             
         Returns:
         --------
         pd.DataFrame
-            DataFrame with traced ray results
+            Result DataFrame with same length and order as original_df
         """
-        # Sort results by original row index to maintain order
+        # Sort by original index to maintain input order
         results_with_indices.sort(key=lambda x: x[1])
         
-        # Handle length mismatches
+        # Verify we have exactly one result per input row
+        expected_indices = set(range(len(original_df)))
+        actual_indices = {idx for _, idx in results_with_indices}
+        
         if len(results_with_indices) != len(original_df):
             if verbosity > VerbosityLevel.BASIC:
-                print(f"    Warning: Result count mismatch. Expected {len(original_df)}, "
-                    f"got {len(results_with_indices)}")
+                print(f"    WARNING: Result count mismatch. Expected {len(original_df)}, got {len(results_with_indices)}")
             
-            if len(results_with_indices) < len(original_df):
-                # Add missing results as None
-                missing_indices = set(range(len(original_df))) - set(idx for _, idx in results_with_indices)
-                for idx in sorted(missing_indices):
+            # Find and fill missing indices
+            missing_indices = expected_indices - actual_indices
+            if missing_indices:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"    Filling {len(missing_indices)} missing results with NaN")
+                for idx in missing_indices:
                     results_with_indices.append((None, idx))
-                results_with_indices.sort(key=lambda x: x[1])
-            else:
-                # Truncate excess results
-                results_with_indices = results_with_indices[:len(original_df)]
+            
+            # Remove extra indices
+            extra_indices = actual_indices - expected_indices
+            if extra_indices:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"    Removing {len(extra_indices)} extra results")
+                results_with_indices = [(res, idx) for res, idx in results_with_indices if idx in expected_indices]
+            
+            # Re-sort after additions/removals
+            results_with_indices.sort(key=lambda x: x[1])
         
-        # Convert results to DataFrame rows
-        processed_results = []
-        for entry, row_idx in results_with_indices:
-            if entry is None:
-                # Ray tracing failed
-                processed_results.append({
-                    "x2": np.nan, "y2": np.nan, "z2": np.nan
-                })
-            else:
+        # Sanity check: verify we now have the right indices
+        final_indices = [idx for _, idx in results_with_indices]
+        if final_indices != list(range(len(original_df))):
+            if verbosity > VerbosityLevel.QUIET:
+                print(f"    ERROR: Index mismatch after alignment! Expected 0..{len(original_df)-1}")
+            # Force correct order by rebuilding
+            index_to_result = {idx: res for res, idx in results_with_indices}
+            results_with_indices = [(index_to_result.get(i), i) for i in range(len(original_df))]
+        
+        # Build output DataFrame row by row
+        result_rows = []
+        
+        for trace_result, orig_idx in results_with_indices:
+            # Extract traced position (or NaN if failed)
+            if trace_result is not None:
                 try:
-                    # Extract ray position from trace result
-                    ray, path_length, wvl = entry
-                    position = ray[0]  # Final position
-                    processed_results.append({
-                        "x2": position[0], "y2": position[1], "z2": position[2]
-                    })
+                    ray, path_length, wvl = trace_result
+                    position = ray[0]
+                    x2, y2, z2 = float(position[0]), float(position[1]), float(position[2])
                 except Exception as e:
                     if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"    Error extracting result: {str(e)}")
-                    processed_results.append({
-                        "x2": np.nan, "y2": np.nan, "z2": np.nan
-                    })
-
-        # Create result DataFrame with the same index as original_df
-        result_df = pd.DataFrame(processed_results, index=[idx for _, idx in results_with_indices])
-        result_df = result_df.sort_index()
-
-        if join:
-            # Merge with original data using indices
-            result = pd.merge(original_df, result_df, 
-                            left_index=True, right_index=True, how="left")
-        else:
-            # Include only essential columns
-            result = result_df.copy()
+                        print(f"    Error extracting trace result for row {orig_idx}: {str(e)}")
+                    x2, y2, z2 = np.nan, np.nan, np.nan
+            else:
+                x2, y2, z2 = np.nan, np.nan, np.nan
             
-            # Add identifier columns if present
-            id_cols = ["id", "neutron_id"]
-            for col in id_cols:
+            # Start with traced coordinates
+            row = {'x2': x2, 'y2': y2, 'z2': z2}
+            
+            # Copy ID and metadata columns from original data for THIS specific row
+            orig_row = original_df.iloc[orig_idx]
+            
+            for col in ['id', 'neutron_id', 'pulse_id', 'parent_id', 'nz', 'pz', 'pulse_time_ns']:
                 if col in original_df.columns:
-                    result[col] = original_df[col].values
+                    row[col] = orig_row[col]
+            
+            # Copy timing
+            if 'toa' in original_df.columns:
+                row['toa2'] = orig_row['toa']
+            
+            # If join=True, also copy ray definition columns
+            if join:
+                for col in ['x', 'y', 'z', 'dx', 'dy', 'dz', 'wavelength']:
+                    if col in original_df.columns:
+                        row[col] = orig_row[col]
+            
+            result_rows.append(row)
+        
+        # Create DataFrame - row i corresponds to original_df.iloc[i]
+        result_df = pd.DataFrame(result_rows)
+        
+        # Verify final alignment
+        if verbosity >= VerbosityLevel.DETAILED:
+            if 'id' in result_df.columns and 'id' in original_df.columns:
+                matches = (result_df['id'].values == original_df['id'].values).sum()
+                if matches != len(result_df):
+                    print(f"    ERROR: Only {matches}/{len(result_df)} IDs match after _create_result_dataframe!")
+
+        # Convert position to pixels
+        result_df["pixel_x"] = np.ceil((result_df["x2"]*self.reduction_ratio + 0.5*self.FOV)*256/self.FOV)
+        result_df["pixel_y"] = np.ceil((result_df["y2"]*self.reduction_ratio + 0.5*self.FOV)*256/self.FOV)
+        
+        return result_df
+
+
+
+    def saturate_photons(self, data: pd.DataFrame = None, deadtime: float = 600.0, blob: float = 0.0, 
+                        blob_variance: float = 0.0, output_format: str = "photons", min_tot: float = 20.0, 
+                        decay_time: float = 100.0, seed: int = None,
+                        verbosity: VerbosityLevel = VerbosityLevel.BASIC
+                        ) -> Union[pd.DataFrame, None]:
+        """
+        Process traced photons to simulate an image intensifier coupled to an event camera.
+
+        Physical model (UPDATED):
+        1. Photon hits image intensifier at position (pixel_x, pixel_y)
+        2. Intensifier creates a circular blob on the camera with variable radius
+        3. ALL pixels within the blob are activated SIMULTANEOUSLY at time = photon_toa + exponential_delay
+        (single exponential delay drawn per photon, applies to entire blob)
+        4. Each pixel has independent deadtime (default 600ns)
+        5. During deadtime, additional photon blobs can update the pixel's TOT (time to last photon)
+        6. Pixels cannot be re-activated (new TOA) until deadtime expires
+        7. TOA = activation time for that pixel (first photon blob to activate it)
+        8. TOT = time from first activation to last photon blob hit within deadtime
+
+        Parameters:
+        -----------
+        data : pd.DataFrame, optional
+            DataFrame containing photon data to process. If None, loads from 'TracedPhotons' directory.
+            Must have columns: pixel_x, pixel_y, toa2, id, neutron_id, pulse_id, pulse_time_ns
+        deadtime : float, default 600.0
+            Deadtime in nanoseconds for pixel saturation. During this window after activation,
+            additional photons update TOT but don't create new activation.
+        blob : float, default 0.0
+            Maximum blob radius in pixel units (can be float). Each photon from the intensifier triggers 
+            all camera pixels within a circular region.
+            Example: blob=0 → 1 pixel per photon, blob=1 → ~9 pixels, blob=2 → ~25 pixels.
+        blob_variance : float, default 0.0
+            Radius value subtracted from blob radius (in pixels). Only used if blob > 0.
+            Each photon's actual blob radius is drawn uniformly from [blob - blob_variance, blob].
+            Example: blob=5, blob_variance=2.5 → radius uniformly distributed in [2.5, 5.0] pixels.
+        output_format : str, default "photons"
+            Output format: "photons" for photon-averaged output with nz, pz columns.
+            Note: Use trace_rays() -> saturate_photons() -> _write_tpx3() pipeline for TPX3 files.
+        min_tot : float, default 20.0
+            Minimum Time-Over-Threshold in nanoseconds.
+        decay_time : float, default 100.0
+            Exponential decay time constant in nanoseconds for blob activation timing.
+            Single delay drawn per photon, applied to all pixels in its blob.
+        seed : int, optional
+            Random seed for reproducibility. If None, uses random state. If specified, allows
+            exact reconstruction of results across multiple runs.
+        verbosity : VerbosityLevel, default VerbosityLevel.BASIC
+            Controls output detail level.
+
+        Returns:
+        --------
+        pd.DataFrame or None
+            Columns: pixel_x, pixel_y, toa2, photon_count, time_diff, id, neutron_id, pulse_id, pulse_time_ns, nz, pz
+            - pixel_x, pixel_y: integer pixel positions
+            - toa2: time of arrival in nanoseconds (first activation time)
+            - time_diff: time-over-threshold in nanoseconds (first to last photon in deadtime)
+            - photon_count: number of photon blobs that hit this pixel during deadtime
+        """
+        if blob < 0:
+            raise ValueError(f"blob must be non-negative, got {blob}")
+        if blob_variance < 0:
+            raise ValueError(f"blob_variance must be non-negative, got {blob_variance}")
+        if blob_variance > blob:
+            raise ValueError(f"blob_variance ({blob_variance}) cannot be larger than blob ({blob})")
+        if deadtime is not None and deadtime <= 0:
+            raise ValueError(f"deadtime must be positive, got {deadtime}")
+
+        # Set random seed if provided
+        if seed is not None:
+            np.random.seed(seed)
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"Random seed set to: {seed}")
+
+        # Set up input data
+        if data is not None:
+            dfs = [(data, None)]
+            save_results = False
+        else:
+            traced_photons_dir = self.archive / "TracedPhotons"
+            saturated_photons_dir = self.archive / "SaturatedPhotons"
+            sim_photons_dir = self.archive / "SimPhotons"
+            saturated_photons_dir.mkdir(parents=True, exist_ok=True)
+
+            csv_files = sorted(traced_photons_dir.glob("traced_sim_data_*.csv"))
+            dfs = []
+            for f in csv_files:
+                if f.stat().st_size > 100:
+                    sim_file = sim_photons_dir / f.name.replace("traced_", "")
+                    sim_df = None
+                    if sim_file.exists():
+                        try:
+                            sim_df = pd.read_csv(sim_file)
+                            if sim_df.empty:
+                                sim_df = None
+                            else:
+                                # Ensure nz and pz exist
+                                for col in ['nz', 'pz']:
+                                    if col not in sim_df.columns:
+                                        if verbosity > VerbosityLevel.BASIC:
+                                            print(f"Warning: SimPhotons file {sim_file.name} missing {col}. Setting to NaN.")
+                                        sim_df[col] = np.nan
+                        except Exception as e:
+                            if verbosity > VerbosityLevel.BASIC:
+                                print(f"Error reading SimPhotons file {sim_file.name}: {str(e)}")
+                            sim_df = None
                     
-            # Add time-of-arrival if present  
-            if "toa" in original_df.columns:
-                result["toa2"] = original_df["toa"].values
-
-        return result
-
-    def _print_tracing_stats(self, filename, original_df, result_df):
-        """
-        Print statistics about ray tracing results.
-        
-        Parameters:
-        -----------
-        filename : str
-            Name of the processed file
-        original_df : pd.DataFrame  
-            Original simulation data
-        result_df : pd.DataFrame
-            Traced results data
-        """
-        total = len(original_df)
-        traced = result_df.dropna(subset=["x2"]).shape[0]
-        failed = total - traced
-        percentage = (traced / total) * 100 if total > 0 else 0
-        
-        print(f"File: {filename}")
-        print(f" Original rays: {total:,}")
-        print(f" Successfully traced: {traced:,} ({percentage:.1f}%)")
-        print(f" Failed traces: {failed:,} ({100-percentage:.1f}%)")
-        
-        if traced > 0:
-            # Basic position statistics
-            x_range = result_df['x2'].max() - result_df['x2'].min()
-            y_range = result_df['y2'].max() - result_df['y2'].min()
-            z_range = result_df['z2'].max() - result_df['z2'].min()
-            print(f"    Position ranges - X: {x_range:.3f}mm, Y: {y_range:.3f}mm, Z: {z_range:.3f}mm")
-
-
-    def zscan(self, zfocus_range: Union[np.ndarray, list, float] = 0.,
-            zfine_range: Union[np.ndarray, list, float] = 0.,
-            data: pd.DataFrame = None, opm: "OpticalModel" = None,
-            n_processes: int = None, chunk_size: int = 1000,
-            archive: str = None, verbose: VerbosityLevel = VerbosityLevel.QUIET) -> pd.Series:
-        """
-        Perform a Z-scan to determine the optimal focus by evaluating ray tracing results.
-
-        Parameters:
-        -----------
-        zfocus_range : Union[np.ndarray, list, float], default 0.
-            Range of z-focus positions to scan (scalar or iterable)
-        zfine_range : Union[np.ndarray, list, float], default 0.
-            Range of z-fine positions to scan (scalar or iterable)
-        data : pd.DataFrame, optional
-            Input DataFrame with ray data; overrides archive/class data if provided
-        opm : OpticalModel, optional
-            Custom optical model; uses self.opm0 if None
-        n_processes : int, optional
-            Number of processes for parallel ray tracing (None uses CPU count)
-        chunk_size : int, default 1000
-            Number of rays per processing chunk
-        archive : str, optional
-            Path to archive directory containing 'SimPhotons' with simulation data files
-        verbose : VerbosityLevel, default VerbosityLevel.BASIC
-            Controls output detail: QUIET (0), BASIC (1), DETAILED (2)
-
-        Returns:
-        --------
-        pd.Series
-            Series mapping each scanned z-value to the combined standard deviation of x2 and y2
-        """
-        # Load data from archive if provided
-        if archive is not None:
-            archive_path = Path(archive)
-            sim_photons_dir = archive_path / "SimPhotons"
-            if not sim_photons_dir.exists():
-                raise ValueError(f"SimPhotons directory not found in {archive_path}")
-
-            csv_files = sorted(sim_photons_dir.glob("sim_data_*.csv"))
-            valid_dfs = []
-            for file in tqdm(csv_files, desc="Loading simulation data", disable=verbose == VerbosityLevel.QUIET):
-                try:
-                    if file.stat().st_size > 100:
-                        df = pd.read_csv(file)
+                    try:
+                        df = pd.read_csv(f)
                         if not df.empty:
-                            valid_dfs.append(df)
-                except Exception as e:
-                    if verbose >= VerbosityLevel.DETAILED:
-                        print(f"⚠️ Skipping {file.name} due to error: {e}")
-                    continue
+                            dfs.append((df, sim_df))
+                    except Exception as e:
+                        if verbosity > VerbosityLevel.BASIC:
+                            print(f"Error reading {f.name}: {str(e)}")
+                        continue
 
-            if valid_dfs:
-                data = pd.concat(valid_dfs, ignore_index=True)
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Loaded {len(valid_dfs)} valid simulation data files with {len(data)} rows.")
+            if not dfs:
+                if verbosity > VerbosityLevel.BASIC:
+                    print("No valid traced photon files found in 'TracedPhotons' directory.")
+                return None
+            save_results = True
+
+        if verbosity > VerbosityLevel.BASIC and save_results:
+            print(f"Found {len(dfs)} valid traced photon files to process")
+
+        all_results = []
+        file_desc = f"Processing {len(dfs)} files" if save_results else "Processing provided data"
+        file_iter = tqdm(dfs, desc=file_desc, disable=not (verbosity > VerbosityLevel.BASIC))
+
+        for i, (df, sim_df) in enumerate(file_iter):
+            file_name = f"provided_data_{i}.csv" if not save_results else Path(df.name).name
+            
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"\nProcessing: {file_name}")
+                print(f"  Input shape: {df.shape}")
+
+            if df.empty:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Skipping empty data: {file_name}")
+                continue
+
+            # Validate required columns
+            required_cols = ['pixel_x', 'pixel_y', 'toa2', 'id', 'neutron_id', 'pulse_id', 'pulse_time_ns']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"Skipping {file_name}: missing columns {missing_cols}")
+                continue
+
+            # Clean data
+            df = df.dropna(subset=required_cols).reset_index(drop=True)
+            if df.empty:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Skipping {file_name}: no valid data after removing NaNs")
+                continue
+
+            # Sort by arrival time
+            if not (df['toa2'].diff().dropna() >= 0).all():
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"Warning: Sorting {file_name} by toa2")
+                df = df.sort_values('toa2').reset_index(drop=True)
+
+            # Extract data arrays (pixel_x, pixel_y are already in integer pixel units)
+            px_float = df['pixel_x'].to_numpy()
+            py_float = df['pixel_y'].to_numpy()
+            toa = df['toa2'].to_numpy()
+            photon_ids = df['id'].to_numpy()
+            neutron_ids = df['neutron_id'].to_numpy()
+            pulse_ids = df['pulse_id'].to_numpy()
+            pulse_times = df['pulse_time_ns'].to_numpy()
+
+            # Get nz, pz from sim_df or df
+            if sim_df is not None and len(sim_df) == len(df):
+                nz = sim_df['nz'].to_numpy() if 'nz' in sim_df.columns else np.full(len(df), np.nan)
+                pz = sim_df['pz'].to_numpy() if 'pz' in sim_df.columns else np.full(len(df), np.nan)
             else:
-                raise ValueError(f"No valid simulation data files found in {sim_photons_dir}")
+                nz = df['nz'].to_numpy() if 'nz' in df.columns else np.full(len(df), np.nan)
+                pz = df['pz'].to_numpy() if 'pz' in df.columns else np.full(len(df), np.nan)
 
-        # Fallback to provided or class data
-        if data is None:
-            data = getattr(self, 'data', None)
-            if data is None:
-                raise ValueError("No data provided and no class data available.")
-            if verbose >= VerbosityLevel.DETAILED:
-                print(f"Using class data with {len(data)} rows.")
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"  Pixel coordinate range: x=[{px_float.min():.1f}, {px_float.max():.1f}], "
+                    f"y=[{py_float.min():.1f}, {py_float.max():.1f}]")
 
-        opm = deepcopy(opm) if opm else deepcopy(self.opm0)
+            # Apply the physical blob model with TOT tracking
+            result_rows = []
+            pixel_state = {}  # Key: (px_i, py_i), Value: {'first_toa': float, 'last_toa': float, 'photon_count': int, 'idx': int}
+            
+            if verbosity >= VerbosityLevel.DETAILED:
+                variance_msg = f", variance ±{blob_variance} pixels" if blob_variance > 0 else ""
+                print(f"  Applying physical blob model: max radius {blob} pixels{variance_msg}, deadtime {deadtime}ns, decay {decay_time}ns")
 
-        # Determine scan type
-        zfocus_is_scalar = isinstance(zfocus_range, (float, int))
-        zfine_is_scalar = isinstance(zfine_range, (float, int))
-
-        if not zfocus_is_scalar and not zfine_is_scalar:
-            raise ValueError("Either zfocus_range or zfine_range must be a scalar, not both iterables.")
-
-        if zfocus_is_scalar:
-            scan_range = np.array(zfine_range if isinstance(zfine_range, (np.ndarray, list)) else [zfine_range])
-            fixed_value = zfocus_range
-            scan_type = "zfine"
-        else:
-            scan_range = np.array(zfocus_range if isinstance(zfocus_range, (np.ndarray, list)) else [zfocus_range])
-            fixed_value = zfine_range
-            scan_type = "zfocus"
-
-        results = {}
-        min_std = float('inf')
-        best_focus = None
-
-        # Single progress bar for zscan
-        pbar = tqdm(scan_range, desc=f"Z-scan ({scan_type})", disable=verbose == VerbosityLevel.QUIET)
-
-        for value in pbar:
-            if verbose >= VerbosityLevel.DETAILED:
-                print(f"\n{'='*50}")
-                print(f"Processing {scan_type} = {value:.2f}")
-
-            try:
-                new_opm = self.refocus(opm, zfocus=value if scan_type == "zfocus" else fixed_value,
-                                    zfine=value if scan_type == "zfine" else fixed_value)
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Refocused OPM with {scan_type}={value:.2f}, fixed_value={fixed_value:.2f}")
-            except Exception as e:
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Error refocusing for {scan_type} = {value:.2f}: {str(e)}")
-                results[value] = float('inf')
-                continue
-
-            # Trace rays with progress bar off for BASIC verbosity
-            traced_df = self.trace_rays(opm=new_opm, join=False, print_stats=False,
-                                    n_processes=n_processes, chunk_size=chunk_size,
-                                    progress_bar=False,  # Disable nested bars
-                                    return_df=True, verbosity=verbose)
-
-            if traced_df is None or traced_df.empty:
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Warning: No valid traced data for {scan_type} = {value:.2f}")
-                results[value] = float('inf')
-                continue
-
-            if 'x2' not in traced_df.columns or 'y2' not in traced_df.columns:
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Warning: Missing x2 or y2 columns for {scan_type} = {value:.2f}")
-                results[value] = float('inf')
-                continue
-
-            try:
-                valid_x2 = traced_df['x2'].dropna()
-                valid_y2 = traced_df['y2'].dropna()
-                if len(valid_x2) == 0 or len(valid_y2) == 0:
-                    if verbose >= VerbosityLevel.DETAILED:
-                        print(f"No valid data points for std calculation at {scan_type} = {value:.2f}")
-                    results[value] = float('inf')
+            for idx in range(len(df)):
+                cx = px_float[idx]
+                cy = py_float[idx]
+                photon_toa = toa[idx]
+                
+                # Draw single exponential delay for this photon's entire blob
+                activation_delay = np.random.exponential(decay_time)
+                activation_time = photon_toa + activation_delay
+                
+                # Draw blob radius for this photon
+                if blob_variance > 0 and blob > 0:
+                    min_radius = blob - blob_variance
+                    actual_blob = np.random.uniform(min_radius, blob)
+                else:
+                    actual_blob = blob
+                
+                # Find all pixels covered by the circular blob
+                if actual_blob > 0:
+                    i_min = int(np.floor(cx - actual_blob - 0.5))
+                    i_max = int(np.ceil(cx + actual_blob + 0.5))
+                    j_min = int(np.floor(cy - actual_blob - 0.5))
+                    j_max = int(np.ceil(cy + actual_blob + 0.5))
+                    
+                    # Create grid of pixel centers
+                    x_grid = np.arange(i_min, i_max + 1)
+                    y_grid = np.arange(j_min, j_max + 1)
+                    xx, yy = np.meshgrid(x_grid, y_grid)
+                    xx = xx.flatten()
+                    yy = yy.flatten()
+                    
+                    # Find closest point in each pixel to circle center
+                    closest_x = np.clip(cx, xx - 0.5, xx + 0.5)
+                    closest_y = np.clip(cy, yy - 0.5, yy + 0.5)
+                    dist2 = (closest_x - cx) ** 2 + (closest_y - cy) ** 2
+                    mask = dist2 <= actual_blob ** 2
+                    
+                    covered_x = xx[mask]
+                    covered_y = yy[mask]
+                else:
+                    # No blob: only the pixel containing the photon center
+                    covered_x = np.array([int(np.floor(cx))])
+                    covered_y = np.array([int(np.floor(cy))])
+                
+                if len(covered_x) == 0:
                     continue
+                
+                # Process all pixels in blob
+                for px_i, py_i in zip(covered_x, covered_y):
+                    pixel_key = (int(px_i), int(py_i))
+                    
+                    # Check if pixel is currently active (in deadtime)
+                    if pixel_key in pixel_state:
+                        pixel_info = pixel_state[pixel_key]
+                        time_since_first = activation_time - pixel_info['first_toa']
+                        
+                        if deadtime is not None and time_since_first <= deadtime:
+                            # Pixel still in deadtime - update last_toa and increment count
+                            pixel_info['last_toa'] = activation_time
+                            pixel_info['photon_count'] += 1
+                            continue
+                        else:
+                            # Deadtime expired - finalize previous pixel event
+                            self._finalize_pixel_event(result_rows, pixel_key, pixel_info, 
+                                                    photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot)
+                            # Remove from active state (will be re-added below)
+                            del pixel_state[pixel_key]
+                    
+                    # Start new pixel activation
+                    pixel_state[pixel_key] = {
+                        'first_toa': activation_time,
+                        'last_toa': activation_time,
+                        'photon_count': 1,
+                        'idx': idx  # Store index of first photon that activated this pixel
+                    }
+            
+            # Finalize all remaining pixel events
+            for pixel_key, pixel_info in pixel_state.items():
+                self._finalize_pixel_event(result_rows, pixel_key, pixel_info,
+                                        photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot)
 
-                std_value = np.sqrt(valid_x2.std()**2 + valid_y2.std()**2)
-                results[value] = std_value
-
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"x2 std: {valid_x2.std():.3f}, y2 std: {valid_y2.std():.3f}, combined std: {std_value:.3f}")
-
-                if std_value < min_std:
-                    min_std = std_value
-                    best_focus = value
-
-                if verbose >= VerbosityLevel.BASIC:
-                    pbar.set_description(
-                        f"Z-scan ({scan_type}) [current: {value:.2f}, std: {std_value:.3f}, best: {min_std:.3f} @ {best_focus:.2f}]"
-                    )
-
-            except Exception as e:
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Error analyzing traced data for {scan_type} = {value:.2f}: {str(e)}")
-                if verbose >= VerbosityLevel.DETAILED:
-                    import traceback
-                    traceback.print_exc()
-                results[value] = float('inf')
+            # Create result DataFrame
+            if not result_rows:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"  No results after processing {file_name}")
                 continue
 
-        pbar.close()
+            result_df = pd.DataFrame(result_rows)
+            
+            # Sort by time to restore chronological order
+            result_df = result_df.sort_values('toa2').reset_index(drop=True)
+            
+            # Save results if processing files
+            if save_results:
+                output_file = saturated_photons_dir / f"saturated_{file_name}"
+                result_df.to_csv(output_file, index=False)
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"  Saved results to: {output_file}")
 
-        if verbose >= VerbosityLevel.DETAILED:
-            print("\nFinal results:")
-            for k, v in sorted(results.items()):
-                print(f"{scan_type} = {k:.2f}: std = {v:.3f}")
+            # Print stats
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"  Input photons: {len(df)}, Output events: {len(result_df)}")
+                if actual_blob > 0:
+                    ratio = len(result_df) / len(df) if len(df) > 0 else 0
+                    print(f"  Expansion ratio (blob effect): {ratio:.2f}x")
+                if 'photon_count' in result_df.columns:
+                    avg_photons = result_df['photon_count'].mean()
+                    print(f"  Average photons per pixel event: {avg_photons:.2f}")
 
-        if min_std != float('inf') and best_focus is not None:
-            if verbose > VerbosityLevel.BASIC:
-                print(f"Z-scan completed. Best {scan_type}: {best_focus:.2f} with std: {min_std:.3f}")
-        else:
-            if verbose > VerbosityLevel.BASIC:
-                print("Z-scan completed but no valid results were found.")
+            all_results.append(result_df)
 
-        return pd.Series(results)
+        # Combine results
+        if all_results:
+            try:
+                combined_df = pd.concat(all_results, ignore_index=True)
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"\nReturning combined DataFrame with {len(combined_df)} rows")
+                return combined_df
+            except ValueError as e:
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"Error combining results: {str(e)}")
+                return None
 
+        if verbosity > VerbosityLevel.BASIC:
+            print("\nNo results to return")
+        return None
 
-
-
-    def zscan_optimize(self, initial_zfocus: float = 0., initial_zfine: float = 0.,
-                    initial_fnumber: float = None,
-                    optimize_param: str = "zfocus", zfocus_min: float = None, zfocus_max: float = None,
-                    zfine_min: float = None, zfine_max: float = None,
-                    fnumber_min: float = None, fnumber_max: float = None,
-                    data: pd.DataFrame = None, opm: "OpticalModel" = None,
-                    n_processes: int = None, chunk_size: int = 1000, archive: str = None,
-                    verbose: VerbosityLevel = VerbosityLevel.BASIC) -> dict:
+    def _finalize_pixel_event(self, result_rows, pixel_key, pixel_info,
+                            photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot):
+        """Helper function to finalize and add a pixel event to results.
+        
+        Output format for saturate_photons (photons format):
+        - pixel_x, pixel_y: integer pixel positions
+        - toa2: time of arrival in nanoseconds (first photon)
+        - time_diff: time-over-threshold in nanoseconds (first to last photon)
+        - photon_count: number of photon blobs that hit this pixel
+        - id, neutron_id, pulse_id, pulse_time_ns: from first photon
+        - nz, pz: from first photon
         """
-        Optimize z-focus, z-fine positions, and/or f-number using lmfit minimization to minimize ray position spread
-        while maximizing the number of traced photons.
+        px_i, py_i = pixel_key
+        first_toa = pixel_info['first_toa']
+        last_toa = pixel_info['last_toa']
+        photon_count = pixel_info['photon_count']
+        first_idx = pixel_info['idx']
+        
+        tot_measured = max(last_toa - first_toa, min_tot)
+        
+        result_rows.append({
+            'pixel_x': px_i,
+            'pixel_y': py_i,
+            'toa2': first_toa,
+            'photon_count': photon_count,
+            'time_diff': tot_measured,
+            'id': photon_ids[first_idx],
+            'neutron_id': neutron_ids[first_idx],
+            'pulse_id': pulse_ids[first_idx],
+            'pulse_time_ns': pulse_times[first_idx],
+            'nz': nz[first_idx],
+            'pz': pz[first_idx]
+        })
+        
+    def _add_pixel_event(self, result_rows, px_i, py_i, window_events, df, 
+                        photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz,
+                        pixel_size, min_tot, output_format):
+        """Helper function to add a pixel event from a deadtime window.
+        
+        Important: Each pixel event should preserve the identity of the FIRST photon
+        that activated that specific pixel, not mix IDs from different neutrons.
+        """
+        # Extract timing and indices
+        toas = [e[0] for e in window_events]
+        indices = [e[1] for e in window_events]
+        
+        toa_first = toas[0]
+        toa_last = toas[-1]
+        tot_measured = max(toa_last - toa_first, min_tot)
+        photon_count = len(window_events)
+        
+        # CRITICAL: Use the FIRST photon's properties for this pixel event
+        # This ensures we don't mix IDs from different neutron events
+        first_idx = indices[0]
+        
+        if output_format == "tpx3":
+            # Convert pixel coordinates back to mm (pixel center)
+            x_mm = (px_i + 0.5) * pixel_size + self.reduction_ratio
+            y_mm = (py_i + 0.5) * pixel_size + self.reduction_ratio
+            
+            result_rows.append({
+                'x': x_mm,
+                'y': y_mm,
+                'toa': toa_first,
+                'tot': tot_measured,
+                'pulse_time_ns': pulse_times[first_idx]
+            })
+        else:  # photons format
+            # Use PIXEL coordinates, not first photon coordinates
+            x_mm = (px_i + 0.5) * pixel_size + self.reduction_ratio
+            y_mm = (py_i + 0.5) * pixel_size + self.reduction_ratio
+            
+            result_rows.append({
+                'x2': x_mm,  # Pixel center position
+                'y2': y_mm,  # Pixel center position
+                'z2': 0.0,   # Sensor plane
+                'pixel_x': px_i,
+                'pixel_y': py_i,
+                'id': photon_ids[first_idx],           # From first photon to hit this pixel
+                'neutron_id': neutron_ids[first_idx],   # From first photon to hit this pixel
+                'pulse_id': pulse_ids[first_idx],       # From first photon to hit this pixel
+                'pulse_time_ns': pulse_times[first_idx], # From first photon to hit this pixel
+                'toa2': toa_first,
+                'photon_count': photon_count,
+                'time_diff': tot_measured,
+                'nz': nz[first_idx],                    # From first photon to hit this pixel
+                'pz': pz[first_idx]                     # From first photon to hit this pixel
+            })
 
-        This method:
-        1. Loads simulation data from archive, provided DataFrame, or class data
-        2. Optimizes zfocus, zfine, fnumber, or combinations sequentially using lmfit
-        3. Balances minimizing std of x2/y2 with maximizing traced photons
-        4. Returns the best parameters and minimum objective value achieved
 
-        Parameters:
-        -----------
-        initial_zfocus : float, default 0.
-            Initial guess for z-focus position
-        initial_zfine : float, default 0.
-            Initial guess for z-fine position
-        initial_fnumber : float, optional
-            Initial guess for f-number (None uses the default lens f-number)
-        optimize_param : str, default "zfocus"
-            Parameter to optimize: "zfocus", "zfine", "fnumber", or combinations like "both", 
-            "zfocus+fnumber", "zfine+fnumber", "all"
-        zfocus_min : float, optional
-            Minimum allowable z-focus value
-        zfocus_max : float, optional
-            Maximum allowable z-focus value
-        zfine_min : float, optional
-            Minimum allowable z-fine value
-        zfine_max : float, optional
-            Maximum allowable z-fine value
-        fnumber_min : float, optional
-            Minimum allowable f-number value
-        fnumber_max : float, optional
-            Maximum allowable f-number value
-        data : pd.DataFrame, optional
-            Input ray data; overrides archive/class data if provided
-        opm : OpticalModel, optional
-            Custom optical model; uses self.opm0 if None
-        n_processes : int, optional
-            Number of processes for parallel ray tracing (None uses CPU count)
-        chunk_size : int, default 1000
-            Number of rays per processing chunk
-        archive : str, optional
-            Path to archive directory with 'SimPhotons' simulation data files
-        verbose : VerbosityLevel, default VerbosityLevel.BASIC
-            Controls output detail: QUIET (0), BASIC (1), DETAILED (2)
-
+    def groupby(self, column: str, low: float = None, high: float = None, 
+                step: float = None, bins: List[float] = None, 
+                labels: List[str] = None, verbosity: VerbosityLevel = VerbosityLevel.BASIC):
+        """
+        Group simulation data by a column and create subfolders with filtered data.
+        
+        Args:
+            column (str): Column name to group by (e.g., 'nz', 'neutronEnergy', 'pulse_id')
+            low (float, optional): Lower bound for binning
+            high (float, optional): Upper bound for binning
+            step (float, optional): Step size for bins
+            bins (List[float], optional): Custom bin edges (alternative to low/high/step)
+            labels (List[str], optional): Custom labels for bins
+            verbosity (VerbosityLevel): Controls output level
+        
         Returns:
-        --------
-        dict
-            Optimization results with keys:
-            - best_zfocus: Optimal z-focus position (if optimized)
-            - best_zfine: Optimal z-fine position (if optimized)
-            - best_fnumber: Optimal f-number (if optimized)
-            - min_std: Minimum standard deviation achieved
-            - traced_fraction: Fraction of photons traced at optimal position
-            - result: lmfit MinimizeResult object from the last optimization
-
+            Lens: Self for method chaining
+        
         Raises:
-        -------
-        ValueError
-            If optimize_param is invalid or no valid data is found
+            ValueError: If column doesn't exist or invalid parameters
         """
-        # Load data from archive if provided
-        if archive is not None:
-            archive_path = Path(archive)
-            sim_photons_dir = archive_path / "SimPhotons"
-            if not sim_photons_dir.exists():
-                raise ValueError(f"SimPhotons directory not found in {archive_path}")
-
-            csv_files = sorted(sim_photons_dir.glob("sim_data_*.csv"))
-            valid_dfs = []
-            for file in tqdm(csv_files, desc="Loading simulation data", disable=verbose == VerbosityLevel.QUIET):
-                try:
-                    if file.stat().st_size > 100:
-                        df = pd.read_csv(file)
-                        if not df.empty:
-                            valid_dfs.append(df)
-                except Exception as e:
-                    if verbose >= VerbosityLevel.DETAILED:
-                        print(f"⚠️ Skipping {file.name} due to error: {e}")
-                    continue
-
-            if valid_dfs:
-                data = pd.concat(valid_dfs, ignore_index=True)
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Loaded {len(valid_dfs)} valid simulation data files with {len(data)} rows.")
-            else:
-                raise ValueError(f"No valid simulation data files found in {sim_photons_dir}")
-
-        # Fallback to provided or class data
-        if data is None:
-            data = getattr(self, 'data', None)
-            if data is None:
-                raise ValueError("No data provided and no class data available.")
-            if verbose >= VerbosityLevel.DETAILED:
-                print(f"Using class data with {len(data)} rows.")
-
-        # Clean data by dropping rows with NaN in essential columns
-        essential_columns = ['x', 'y', 'z', 'dx', 'dy', 'dz', 'wavelength']
-        if not all(col in data.columns for col in essential_columns):
-            raise ValueError(f"Data missing required columns: {essential_columns}")
-        data = data.dropna(subset=essential_columns)
-        if data.empty:
-            raise ValueError("Data is empty after removing NaN from essential columns.")
-        total_photons = len(data)
-        if verbose >= VerbosityLevel.DETAILED:
-            print(f"Cleaned data to {total_photons} rows after removing NaN from essential columns.")
-        if verbose >= VerbosityLevel.DETAILED:
-            print(f"Data NaN summary:\n{data.isna().sum()}")
-
-        opm = deepcopy(opm) if opm else deepcopy(self.opm0)
+        if self.data.empty:
+            raise ValueError("No simulation data available. Load data first.")
         
-        # Get default f-number if not provided
-        if initial_fnumber is None:
-            # Extract the default f-number from the optical model
-            try:
-                initial_fnumber = opm.optical_spec.pupil.value
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Using default f-number from optical model: {initial_fnumber}")
-            except:
-                # Default to 0.95 for the Nikkor lens if we can't extract it
-                initial_fnumber = 0.95
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Could not extract f-number from optical model, using default: {initial_fnumber}")
-
-        # Validate optimize_param
-        valid_params = ["zfocus", "zfine", "fnumber", "both", "zfocus+fnumber", "zfine+fnumber", "all"]
-        if optimize_param not in valid_params:
-            raise ValueError(f"optimize_param must be one of {valid_params}")
-
-        # Determine which parameters to optimize
-        optimize_zfocus = optimize_param in ["zfocus", "both", "zfocus+fnumber", "all"]
-        optimize_zfine = optimize_param in ["zfine", "both", "zfine+fnumber", "all"]
-        optimize_fnumber = optimize_param in ["fnumber", "zfocus+fnumber", "zfine+fnumber", "all"]
-
-        # Objective function factory with support for f-number
-        def create_objective(param_name: str, fixed_params: dict):
-            best_result = {
-                'z': fixed_params.get('zfocus', initial_zfocus) if param_name == 'zfocus' else 
-                    fixed_params.get('zfine', initial_zfine) if param_name == 'zfine' else
-                    fixed_params.get('fnumber', initial_fnumber),
-                'std': float('inf'), 
-                'traced_fraction': 0.0
-            }
-            iteration_count = [0]
-
-            def objective(params):
-                z = params['z'].value
-                
-                # Create a dictionary of parameters for refocus method
-                refocus_kwargs = fixed_params.copy()
-                refocus_kwargs[param_name] = z
-                
+        if column not in self.data.columns:
+            raise ValueError(f"Column '{column}' not found in data. Available columns: {list(self.data.columns)}")
+        
+        # Create bins
+        if bins is None:
+            if low is None or high is None or step is None:
+                raise ValueError("Must provide either 'bins' or all of 'low', 'high', 'step'")
+            bins = np.arange(low, high + step, step)
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"Grouping by column '{column}' with {len(bins)-1} bins")
+        
+        # Create groupby folder structure
+        groupby_dir = self.archive / column
+        groupby_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save metadata about the groupby operation
+        metadata = {
+            "column": column,
+            "bins": bins.tolist() if isinstance(bins, np.ndarray) else bins,
+            "labels": labels,
+            "created": pd.Timestamp.now().isoformat(),
+            "type": "groupby"
+        }
+        
+        metadata_file = groupby_dir / ".groupby_metadata.json"
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=4)
+        
+        if verbosity >= VerbosityLevel.DETAILED:
+            print(f"Created groupby directory: {groupby_dir}")
+            print(f"Saved metadata to: {metadata_file}")
+        
+        # Load all SimPhotons data if not already loaded
+        sim_photons_dir = self.archive / "SimPhotons"
+        if not sim_photons_dir.exists():
+            raise FileNotFoundError(f"SimPhotons directory not found: {sim_photons_dir}")
+        
+        csv_files = sorted(sim_photons_dir.glob("sim_data_*.csv"))
+        if not csv_files:
+            raise FileNotFoundError(f"No sim_data_*.csv files found in {sim_photons_dir}")
+        
+        # Load all data if self.data is empty or incomplete
+        if len(csv_files) > 1 or self.data.empty:
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"Loading {len(csv_files)} simulation files...")
+            
+            all_data = []
+            for csv_file in tqdm(csv_files, desc="Loading data", disable=(verbosity == VerbosityLevel.QUIET)):
                 try:
-                    current_opm = self.refocus(opm, **refocus_kwargs)
+                    df = pd.read_csv(csv_file)
+                    if not df.empty:
+                        # Add file index to track which file each row came from
+                        df['_source_file_idx'] = int(csv_file.stem.split('_')[-1])
+                        all_data.append(df)
                 except Exception as e:
-                    if verbose >= VerbosityLevel.DETAILED:
-                        print(f"Iteration {iteration_count[0]}: {param_name}={z:.3f}, refocus failed: {str(e)}")
-                    iteration_count[0] += 1
-                    return float('inf')
-
-                df = self.trace_rays(opm=current_opm, join=False, print_stats=False,
-                                n_processes=n_processes, chunk_size=chunk_size,
-                                progress_bar=False, return_df=True, verbosity=verbose)
-
-                if df is None or df.empty:
-                    if verbose >= VerbosityLevel.DETAILED:
-                        print(f"Iteration {iteration_count[0]}: {param_name}={z:.3f}, trace_rays returned None or empty")
-                    iteration_count[0] += 1
-                    return float('inf')
-
-                if 'x2' not in df.columns or 'y2' not in df.columns:
-                    if verbose >= VerbosityLevel.DETAILED:
-                        print(f"Iteration {iteration_count[0]}: {param_name}={z:.3f}, missing x2/y2 columns")
-                    iteration_count[0] += 1
-                    return float('inf')
-
-                valid_df = df.dropna(subset=['x2', 'y2'])
-                traced_count = len(valid_df)
-                traced_fraction = traced_count / total_photons if total_photons > 0 else 0.0
-
-                if traced_count < 2:
-                    if verbose >= VerbosityLevel.DETAILED:
-                        print(f"Iteration {iteration_count[0]}: {param_name}={z:.3f}, insufficient valid data (traced: {traced_count}/{total_photons})")
-                    iteration_count[0] += 1
-                    return 1e6 + 1000.0 * (1.0 - traced_fraction)  # High base value to avoid NaN issues
-
-                std_x2 = valid_df['x2'].std()
-                std_y2 = valid_df['y2'].std()
-                std_value = np.sqrt(std_x2**2 + std_y2**2) if not (pd.isna(std_x2) or pd.isna(std_y2)) else float('inf')
-
-                # Objective: minimize std, heavily penalize low traced fraction
-                penalty = 1000.0 * (1.0 - traced_fraction)
-                objective_value = std_value + penalty if std_value != float('inf') else 1e6 + penalty
-
-                # Different reporting for fnumber optimization
-                if verbose >= VerbosityLevel.DETAILED:
-                    param_str = f"f/{z:.2f}" if param_name == 'fnumber' else f"{param_name}={z:.3f}"
-                    print(f"Iteration {iteration_count[0]}: {param_str}, std={std_value:.3f}, "
-                        f"traced={traced_count}/{total_photons} ({traced_fraction:.2%}), penalty={penalty:.3f}, objective={objective_value:.3f}")
-
-                if objective_value < (best_result['std'] + 1000.0 * (1.0 - best_result['traced_fraction'])):
-                    best_result['z'] = z
-                    best_result['std'] = std_value
-                    best_result['traced_fraction'] = traced_fraction
-
-                iteration_count[0] += 1
-                return objective_value
-
-            return objective, best_result
-
-        results = {}
-        current_zfocus = initial_zfocus
-        current_zfine = initial_zfine
-        current_fnumber = initial_fnumber
-
-        # Optimize zfocus
-        if optimize_zfocus:
-            if verbose >= VerbosityLevel.BASIC:
-                print(f"Starting optimization for zfocus with initial value {current_zfocus:.3f}")
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Warning: Failed to load {csv_file.name}: {e}")
             
-            fixed_params = {'zfine': current_zfine, 'fnumber': current_fnumber}
-            objective_func, best_result = create_objective('zfocus', fixed_params)
-
-            params = Parameters()
-            params.add('z', value=current_zfocus, min=zfocus_min, max=zfocus_max)
-
-            try:
-                result = minimize(objective_func, params, method='nelder')  # Nelder-Mead method
-                best_zfocus = float(result.params['z'].value)
-                min_std = best_result['std']
-                traced_fraction = best_result['traced_fraction']
-
-                results['best_zfocus'] = best_zfocus
-                results['min_std'] = min_std
-                results['traced_fraction'] = traced_fraction
-                results['result'] = result
-
-                if verbose >= VerbosityLevel.BASIC:
-                    print(f"Optimized zfocus: {best_zfocus:.3f}, min std: {min_std:.3f}, traced fraction: {traced_fraction:.2%}")
-
-                current_zfocus = best_zfocus
-
-            except MinimizerException as e:
-                if verbose >= VerbosityLevel.BASIC:
-                    print(f"Optimization of zfocus failed: {str(e)}")
-                results['best_zfocus'] = current_zfocus
-                results['min_std'] = float('inf')
-                results['traced_fraction'] = 0.0
-                results['result'] = None
-
-        # Optimize zfine
-        if optimize_zfine:
-            if verbose >= VerbosityLevel.BASIC:
-                print(f"Starting optimization for zfine with initial value {current_zfine:.3f}")
+            if not all_data:
+                raise ValueError("No valid data loaded from SimPhotons")
             
-            fixed_params = {'zfocus': current_zfocus, 'fnumber': current_fnumber}
-            objective_func, best_result = create_objective('zfine', fixed_params)
-
-            params = Parameters()
-            params.add('z', value=current_zfine, min=zfine_min, max=zfine_max)
-
-            try:
-                result = minimize(objective_func, params, method='nelder')
-                best_zfine = float(result.params['z'].value)
-                min_std = best_result['std']
-                traced_fraction = best_result['traced_fraction']
-
-                results['best_zfine'] = best_zfine
-                results['min_std'] = min_std
-                results['traced_fraction'] = traced_fraction
-                results['result'] = result
-
-                if verbose >= VerbosityLevel.BASIC:
-                    print(f"Optimized zfine: {best_zfine:.3f}, min std: {min_std:.3f}, traced fraction: {traced_fraction:.2%}")
-
-                current_zfine = best_zfine
-
-            except MinimizerException as e:
-                if verbose >= VerbosityLevel.BASIC:
-                    print(f"Optimization of zfine failed: {str(e)}")
-                results['best_zfine'] = current_zfine
-                results['min_std'] = float('inf')
-                results['traced_fraction'] = 0.0
-                results['result'] = None
-
-        # Optimize fnumber
-        if optimize_fnumber:
-            if verbose >= VerbosityLevel.BASIC:
-                print(f"Starting optimization for f-number with initial value f/{current_fnumber:.2f}")
+            self.data = pd.concat(all_data, ignore_index=True)
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"Loaded {len(self.data)} total rows from {len(all_data)} files")
+        
+        # Add bin labels
+        if labels is None:
+            labels = [f"{bins[i]:.3f}" for i in range(len(bins)-1)]
+        
+        # Bin the data
+        self.data['_bin_label'] = pd.cut(
+            self.data[column], 
+            bins=bins, 
+            labels=labels, 
+            right=False,
+            include_lowest=True
+        )
+        
+        # Count rows per bin
+        bin_counts = self.data['_bin_label'].value_counts().sort_index()
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"\nBin distribution for '{column}':")
+            for label, count in bin_counts.items():
+                print(f"  {label}: {count} photons")
+        
+        # Create subfolders and save filtered data
+        for i, label in enumerate(tqdm(labels, desc="Creating groups", disable=(verbosity == VerbosityLevel.QUIET))):
+            bin_dir = groupby_dir / label
+            bin_dir.mkdir(parents=True, exist_ok=True)
             
-            fixed_params = {'zfocus': current_zfocus, 'zfine': current_zfine}
-            objective_func, best_result = create_objective('fnumber', fixed_params)
-
-            params = Parameters()
-            params.add('z', value=current_fnumber, min=fnumber_min, max=fnumber_max)
-
-            try:
-                result = minimize(objective_func, params, method='nelder')
-                best_fnumber = float(result.params['z'].value)
-                min_std = best_result['std']
-                traced_fraction = best_result['traced_fraction']
-
-                results['best_fnumber'] = best_fnumber
-                results['min_std'] = min_std
-                results['traced_fraction'] = traced_fraction
-                results['result'] = result
-
-                if verbose >= VerbosityLevel.BASIC:
-                    print(f"Optimized f-number: f/{best_fnumber:.2f}, min std: {min_std:.3f}, traced fraction: {traced_fraction:.2%}")
-
-            except MinimizerException as e:
-                if verbose >= VerbosityLevel.BASIC:
-                    print(f"Optimization of f-number failed: {str(e)}")
-                results['best_fnumber'] = current_fnumber
-                results['min_std'] = float('inf')
-                results['traced_fraction'] = 0.0
-                results['result'] = None
-
-        return results
+            # Create SimPhotons subfolder
+            bin_simphotons = bin_dir / "SimPhotons"
+            bin_simphotons.mkdir(parents=True, exist_ok=True)
+            
+            # Filter data for this bin
+            bin_data = self.data[self.data['_bin_label'] == label].copy()
+            
+            if bin_data.empty:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Warning: No data in bin '{label}'")
+                continue
+            
+            # Group by source file index and save
+            if '_source_file_idx' in bin_data.columns:
+                for file_idx, group_data in bin_data.groupby('_source_file_idx'):
+                    # Remove temporary columns
+                    save_data = group_data.drop(columns=['_bin_label', '_source_file_idx'], errors='ignore')
+                    output_file = bin_simphotons / f"sim_data_{int(file_idx)}.csv"
+                    save_data.to_csv(output_file, index=False)
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Saved {len(save_data)} rows to {output_file.name}")
+            else:
+                # If no source file index, save all data to single file
+                save_data = bin_data.drop(columns=['_bin_label'], errors='ignore')
+                output_file = bin_simphotons / "sim_data_0.csv"
+                save_data.to_csv(output_file, index=False)
+        
+        # Clean up temporary columns
+        self.data.drop(columns=['_bin_label', '_source_file_idx'], errors='ignore', inplace=True)
+        
+        # Store groupby info in the Lens object
+        self._groupby_column = column
+        self._groupby_dir = groupby_dir
+        self._groupby_labels = labels
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"\n✓ Groupby complete. Created {len(labels)} groups in: {groupby_dir}")
+        
+        return self
 
 
     def plot(self, opm: "OpticalModel" = None, kind: str = "layout",
@@ -1608,7 +2644,7 @@ class Lens:
         Plot the lens layout or aberration diagrams.
 
         Args:
-            opm (OpticalModel, optional): Optical model to plot. Defaults to self.opm0.
+            opm (OpticalModel, optional): Optical model to plot. Defaults to self.opm.
             kind (str): Type of plot ('layout', 'ray', 'opd', 'spot'). Defaults to 'layout'.
             scale (float):  Scale factor for the plot. If None, uses Fit.User_Scale or Fit.All_Same.
             is_dark (bool): Use dark theme for plots. Defaults to False.
@@ -1624,9 +2660,9 @@ class Lens:
         Raises:
             ValueError: If opm is None or kind is unsupported.
         """
-        opm = opm if opm is not None else self.opm0
+        opm = opm if opm is not None else self.opm
         if opm is None:
-            raise ValueError("No optical model available to plot (self.opm0 is None).")
+            raise ValueError("No optical model available to plot (self.opm is None).")
 
         # Set default figsize based on plot kind
         figsize = kwargs.pop("figsize", (8, 2) if kind == "layout" else (8, 4))

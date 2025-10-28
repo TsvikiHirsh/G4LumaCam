@@ -4,7 +4,7 @@
 #include "G4Material.hh"
 #include "G4NistManager.hh"
 #include "G4MaterialPropertiesTable.hh"
-#include "G4ios.hh" // Added for G4cout/G4cerr
+#include "G4ios.hh"
 
 class MaterialBuilder {
 public:
@@ -13,6 +13,7 @@ public:
 
     enum class ScintType { EJ200, GS20, LYSO };
 
+    void DefineMaterials();
     G4Material* getVacuum() const { return vacuum; }
     G4Material* getAir() const { return air; }
     G4Material* getPVT() const { return scintMaterialPVT; }
@@ -38,7 +39,7 @@ private:
     G4Material* scintMaterialPVT;
     G4Material* scintMaterialGS20;
     G4Material* scintMaterialLYSO;
-    G4Material* scintMaterial; // Points to the selected scintillator
+    G4Material* scintMaterial;
     G4Material* sampleMaterial;
     G4Material* windowMaterial;
     G4Material* absorberMaterial;
