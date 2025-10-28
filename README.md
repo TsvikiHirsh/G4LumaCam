@@ -80,6 +80,70 @@ EMPIR is a proprietary reconstruction code for Timepix-3 detector data, availabl
    pip install .
    ```
 
+### NCrystal Support (Optional)
+
+G4LumaCam now supports **NCrystal** for simulating thermal neutron scattering in crystalline materials. This enables high-fidelity Bragg edge imaging and other crystallographic neutron techniques.
+
+#### Installing NCrystal
+
+NCrystal and its Geant4 bindings can be easily installed via pip:
+
+```bash
+pip install ncrystal-geant4
+```
+
+Alternatively, install both NCrystal and Geant4 via conda:
+
+```bash
+conda install -c conda-forge ncrystal geant4
+```
+
+For manual installation, see the [NCrystal-Geant4 repository](https://github.com/mctools/ncrystal-geant4).
+
+#### Building with NCrystal
+
+Once NCrystal is installed, rebuild G4LumaCam to enable NCrystal support:
+
+```bash
+cd build
+cmake ../src/G4LumaCam
+make
+```
+
+The build system will automatically detect NCrystal and enable it. You'll see:
+```
+-- NCrystal-Geant4 found - NCrystal support enabled
+```
+
+If NCrystal is not found, G4LumaCam will build without NCrystal support (standard NIST materials only).
+
+#### Using NCrystal Materials
+
+With NCrystal support enabled, you can define crystalline sample materials using NCrystal cfg-strings in your macro files:
+
+```bash
+# Example: Fe gamma phase (BCC) at room temperature
+/lumacam/sampleMaterial Fe_sg229.ncmat;temp=293.15K
+
+# Example: Aluminum FCC at 80K
+/lumacam/sampleMaterial Al_sg225.ncmat;temp=80K
+
+# Example: Silicon with custom parameters
+/lumacam/sampleMaterial Si_sg227.ncmat;temp=300K;dcutoff=0.5
+```
+
+**Pre-configured Examples**: See the `macros/thermal_neutrons/` directory for ready-to-use configurations for Fe Bragg edge imaging with thermal neutrons (0.5 Å to 8 Å wavelength range).
+
+#### NCrystal Physics
+
+NCrystal provides:
+- Accurate crystalline structure factors for Bragg scattering
+- Inelastic scattering (phonons)
+- Temperature-dependent cross sections
+- Support for 100+ crystalline materials from the NCrystal database
+
+The physics is automatically installed after `runMgr->Initialize()` and handles thermal neutrons (<5 eV). Higher energy neutrons and other particles continue to use standard Geant4 physics.
+
 ## Simulation Output & Reconstruction with EMPIR
 
 G4LumaCam generates standard **TPX3 files** from the simulation, which are compatible with various Timepix-3 reconstruction tools.

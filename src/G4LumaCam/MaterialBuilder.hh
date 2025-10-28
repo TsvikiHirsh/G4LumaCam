@@ -27,6 +27,13 @@ public:
     void setScintillatorType(ScintType type);
     void setScintillatorType(const G4String& typeName);
 
+#ifdef USE_NCRYSTAL
+    G4Material* createNCrystalMaterial(const G4String& cfgString);
+    bool isNCrystalAvailable() const { return true; }
+#else
+    bool isNCrystalAvailable() const { return false; }
+#endif
+
 private:
     void setupMaterialProperties(G4Material* mat, const G4double* energies,
                                 const G4double* rindex, const G4double* abslength,

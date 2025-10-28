@@ -1,0 +1,55 @@
+# Thermal neutron macro for Fe Bragg edge imaging
+# This configuration uses NCrystal for crystalline Fe (gamma phase - BCC structure)
+# Sample thickness: 20 mm
+# Neutron wavelength range: 0.5 Å to 8 Å
+# This corresponds to energy range: ~1.28 meV to ~327 meV (0.00128 eV to 0.327 eV)
+
+# Visualization settings
+/vis/open OGL
+/vis/drawVolume
+/vis/scene/add/trajectories
+/vis/viewer/set/background white
+/vis/viewer/set/lineWidth 2
+
+# Particle source setup - using General Particle Source
+/gps/particle neutron
+/gps/pos/type Plane
+/gps/pos/shape Circle
+/gps/pos/centre 0 0 -1085 cm
+/gps/pos/radius 6 cm
+/gps/direction 0 0 1
+
+# Energy distribution for thermal neutrons (Bragg edge range)
+# Using a power spectrum distribution to cover the range from 0.5 Å to 8 Å
+/gps/ene/type Lin
+/gps/ene/min 0.00128 eV
+/gps/ene/max 0.327 eV
+/gps/ene/gradient 0
+/gps/ene/intercept 1
+
+# Sample material - Fe gamma phase (BCC, space group 229)
+# Temperature set to room temperature (293.15 K)
+/lumacam/sampleMaterial Fe_sg229.ncmat;temp=293.15K
+
+# Sample geometry
+/lumacam/sampleThickness 2.0
+/lumacam/sampleWidth 12.0
+
+# Scintillator setup - GS20 is good for thermal neutron detection
+/lumacam/scintMaterial GS20
+/lumacam/scintThickness 0.5
+
+# Beam parameters for pulsed neutron source
+/lumacam/flux 1e6
+/lumacam/freq 20000
+
+# Output settings
+/lumacam/csvFilename fe_bragg_edge.csv
+/lumacam/batchSize 5000
+
+# Time settings for neutron emission
+/lumacam/tmin 0.0
+/lumacam/tmax 50000.0
+
+# Run the simulation
+/run/beamOn 50000

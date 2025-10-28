@@ -10,6 +10,10 @@
 #include "globals.hh"
 #include <vector>
 
+#ifdef USE_NCRYSTAL
+#include "G4NCrystal/G4NCrystal.hh"
+#endif
+
 MaterialBuilder::MaterialBuilder() 
     : vacuum(nullptr), air(nullptr), scintMaterialPVT(nullptr), 
       scintMaterialGS20(nullptr), scintMaterialLYSO(nullptr), 
@@ -316,3 +320,22 @@ void MaterialBuilder::setScintillatorType(const G4String& typeName) {
         G4cerr << "ERROR: Unknown scintillator type: " << typeName << ". Available types: EJ200, GS20, LYSO, ScintillatorPVT, ScintillatorGS20, ScintillatorLYSO" << G4endl;
     }
 }
+
+#ifdef USE_NCRYSTAL
+G4Material* MaterialBuilder::createNCrystalMaterial(const G4String& cfgString) {
+    G4cout << "MaterialBuilder: Creating NCrystal material with cfg string: " << cfgString << G4endl;
+    try {
+        G4Material* ncMat = G4NCrystal::createMaterial(cfgString);
+        if (ncMat) {
+            G4cout << "MaterialBuilder: Successfully created NCrystal material: " << ncMat->GetName() << G4endl;
+            return ncMat;
+        } else {
+            G4cerr << "ERROR: G4NCrystal::createMaterial returned nullptr for cfg string: " << cfgString << G4endl;
+            return nullptr;
+        }
+    } catch (const std::exception& e) {
+        G4cerr << "ERROR: Exception while creating NCrystal material: " << e.what() << G4endl;
+        return nullptr;
+    }
+}
+#endif

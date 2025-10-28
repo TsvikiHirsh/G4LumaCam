@@ -11,6 +11,10 @@
 #include "G4OpticalPhysics.hh"
 #include "G4RadioactiveDecayPhysics.hh"
 
+#ifdef USE_NCRYSTAL
+#include "G4NCrystal/G4NCrystal.hh"
+#endif
+
 int main(int argc, char** argv) {
     Sim::batchSize = 10000; // Default, will be overridden by macro if set
     
@@ -32,9 +36,15 @@ int main(int argc, char** argv) {
     SimulationManager* simMgr = new SimulationManager();
     runMgr->SetUserAction(simMgr);
     runMgr->SetUserAction(new SimulationManager::EventHandler(simMgr));
-    
+
     runMgr->Initialize();
-    
+
+#ifdef USE_NCRYSTAL
+    // Install NCrystal physics (must be after runMgr->Initialize() and before BeamOn)
+    G4NCrystal::install();
+    G4cout << "NCrystal physics installed successfully" << G4endl;
+#endif
+
     G4VisManager* visMgr = new G4VisExecutive();
     visMgr->Initialize();
     

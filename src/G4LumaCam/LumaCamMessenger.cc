@@ -124,12 +124,33 @@ void LumaCamMessenger::SetMaterial(const G4String& materialName) {
         G4cerr << "ERROR: sampleLog is nullptr, cannot set material to " << materialName << G4endl;
         return;
     }
-    
-    G4NistManager* nistManager = G4NistManager::Instance();
-    G4Material* material = nistManager->FindOrBuildMaterial(materialName);
-    
+
+    G4Material* material = nullptr;
+
+    // Check if this is an NCrystal cfg string (contains .ncmat, .nxs, or other NCrystal indicators)
+    if (materialName.contains(".ncmat") || materialName.contains(".nxs") ||
+        materialName.contains(";temp=") || materialName.contains(";dcutoff=")) {
+#ifdef USE_NCRYSTAL
+        G4cout << "Detected NCrystal cfg string: " << materialName << G4endl;
+        material = matBuilder->createNCrystalMaterial(materialName);
+        if (material) {
+            Sim::useNCrystal = true;
+            Sim::ncrystalCfgString = materialName;
+        }
+#else
+        G4cerr << "ERROR: NCrystal support not enabled. Recompile with NCrystal-Geant4 installed." << G4endl;
+        G4cout << "To install: pip install ncrystal-geant4" << G4endl;
+        return;
+#endif
+    } else {
+        // Try to find/build material from NIST database
+        G4NistManager* nistManager = G4NistManager::Instance();
+        material = nistManager->FindOrBuildMaterial(materialName);
+        Sim::useNCrystal = false;
+    }
+
     if (material) {
-        G4cout << "Current sample material: " 
+        G4cout << "Current sample material: "
                << sampleLog->GetMaterial()->GetName() << G4endl;
         Sim::sampleMaterial = materialName;
         GeometryConstructor* geom = dynamic_cast<GeometryConstructor*>(
@@ -138,8 +159,8 @@ void LumaCamMessenger::SetMaterial(const G4String& materialName) {
         if (geom) {
             geom->UpdateSampleGeometry(Sim::SAMPLE_THICKNESS, material);
             G4RunManager::GetRunManager()->GeometryHasBeenModified();
-            G4cout << "Sample material set to: " << materialName 
-                   << ", Confirmed material: " 
+            G4cout << "Sample material set to: " << materialName
+                   << ", Confirmed material: "
                    << sampleLog->GetMaterial()->GetName() << G4endl;
         } else {
             G4cerr << "ERROR: Failed to cast to GeometryConstructor!" << G4endl;
@@ -147,10 +168,16 @@ void LumaCamMessenger::SetMaterial(const G4String& materialName) {
     } else {
         G4cerr << "Material " << materialName << " not found!" << G4endl;
         G4cout << "Available NIST materials:" << G4endl;
+        G4NistManager* nistManager = G4NistManager::Instance();
         const std::vector<G4String>& materialNames = nistManager->GetNistMaterialNames();
         for (const auto& name : materialNames) {
             G4cout << name << G4endl;
         }
+#ifdef USE_NCRYSTAL
+        G4cout << "\nFor NCrystal materials, use cfg strings like:" << G4endl;
+        G4cout << "  Al_sg225.ncmat;temp=80K" << G4endl;
+        G4cout << "  Fe_sg229.ncmat;temp=293.15K" << G4endl;
+#endif
     }
 }
 
