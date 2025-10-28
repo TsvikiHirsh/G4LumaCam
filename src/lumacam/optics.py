@@ -115,23 +115,44 @@ class Lens:
         Args:
             archive (str, optional): Directory path for saving results.
             data (pd.DataFrame, optional): Optical photon data table.
-            kind (str, optional): Lens type ('nikkor_58mm', 'microscope', 'zmx_file'). Defaults to 'nikkor_58mm'.
+            kind (str, optional): Lens type ('nikkor_58mm', 'microscope', 'zmx_file').
+                Defaults to 'nikkor_58mm'. Auto-detected as 'zmx_file' if zmx_file parameter is provided.
             focus (float, optional): Initial focus adjustment in mm relative to default settings.
-            zmx_file (str, optional): Path to .zmx file for custom lens (required when kind='zmx_file').
+            zmx_file (str, optional): Path to .zmx file for custom lens.
+                When provided, kind is automatically set to 'zmx_file'.
             focus_gaps (List[Tuple[int, float]], optional): List of (gap_index, scaling_factor) for focus adjustment.
-            dist_from_obj (float, optional): Distance from object to first lens in mm. Defaults to 35.0.
+                Required for focus adjustments when using zmx_file.
+            dist_from_obj (float, optional): Distance from object to first lens in mm.
+                Defaults to lens-specific values: nikkor_58mm=461.535, microscope=41.0, zmx_file=100.0.
             gap_between_lenses (float, optional): Gap between lenses in mm. Defaults to 15.0.
             dist_to_screen (float, optional): Distance from last lens to screen in mm. Defaults to 20.0.
             fnumber (float, optional): F-number of the optical system. Defaults to 8.0.
 
         Raises:
             ValueError: If invalid lens kind, missing zmx_file for 'zmx_file', or invalid parameters.
+
+        Example:
+            >>> # Simple usage - kind is auto-detected
+            >>> lens = Lens(archive="path/to/archive", zmx_file="my_lens.zmx")
+            >>>
+            >>> # With focus gaps for refocusing
+            >>> lens = Lens(archive="path/to/archive",
+            ...             zmx_file="my_lens.zmx",
+            ...             focus_gaps=[(12, 1.0)])
         """
+
+        # Auto-detect kind from zmx_file parameter
+        if zmx_file is not None and kind == "nikkor_58mm":  # Only auto-detect if kind is default
+            kind = "zmx_file"
 
         self.kind = kind
         self.focus = focus
         self.zmx_file = zmx_file
         self.focus_gaps = focus_gaps
+
+        # Validate inputs
+        if kind == "zmx_file" and zmx_file is None:
+            raise ValueError("zmx_file must be provided when kind='zmx_file'")
 
         # Set default parameters based on lens kind
         if kind == "nikkor_58mm":
@@ -147,19 +168,16 @@ class Lens:
             self.fnumber = fnumber
             self.default_focus_gaps = [(24, None), (31, None)]  # Will be set after loading
         elif kind == "zmx_file":
-            self.dist_from_obj = dist_from_obj
+            # Provide sensible defaults for zmx_file to prevent None values
+            self.dist_from_obj = dist_from_obj if dist_from_obj is not None else 100.0  # Default distance
             self.gap_between_lenses = gap_between_lenses
             self.dist_to_screen = dist_to_screen
             self.fnumber = fnumber
             self.default_focus_gaps = focus_gaps or []
+            if focus_gaps is None:
+                print("Warning: focus_gaps not provided for zmx_file; focus adjustment will have no effect")
         else:
             raise ValueError(f"Unknown lens kind: {kind}, supported lenses are ['nikkor_58mm', 'microscope', 'zmx_file']")
-
-        # Validate inputs
-        if kind == "zmx_file" and zmx_file is None:
-            raise ValueError("zmx_file must be provided when kind='zmx_file'")
-        if kind == "zmx_file" and focus_gaps is None:
-            print("Warning: focus_gaps not provided for zmx_file; zfine will have no effect unless specified")
 
         if archive is not None:
             self.archive = Path(archive)
