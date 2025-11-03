@@ -371,16 +371,14 @@ class Config:
                 shape_unit="mm",
                 flux=1e6,  # Neutron flux in n/cm²/s
                 freq=20,  # Pulse frequency in Hz (20 Hz)
-                tmin=0.0,  # Start time
-                tmax=50000.0,  # End time in ns
                 num_events=50000,
                 progress_interval=100,
-                csv_filename="bragg_edge.csv",
-                sample_material="Fe_sg229.ncmat;temp=293.15K",  # Fe gamma phase (BCC) at room temperature
+                csv_filename="sim_data.csv",
+                sample_material="Fe_sg225_Iron-gamma.ncmat;temp=293.15K",  # Fe gamma phase (BCC) at room temperature
                 scintillator="GS20",  # GS20 is optimized for thermal neutron detection
                 sample_thickness=2.0,  # 20 mm sample thickness
                 sample_width=12.0,  # 12 cm = 120 mm
-                scintillator_thickness=0.5,  # 5 mm scintillator thickness
+                scintillator_thickness=0.1,  # 1 mm scintillator thickness
                 csv_batch_size=5000,
             )
 

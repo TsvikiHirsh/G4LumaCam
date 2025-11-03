@@ -1669,7 +1669,7 @@ class Analysis:
         if params is None:
             parameters = self.default_params.get("in_focus", {})
         elif isinstance(params, str):
-            if params in ["in_focus", "out_of_focus", "hitmap"]:
+            if params in self.default_params.keys():
                 parameters = self.default_params.get(params, {})
             elif params.endswith('.json'):
                 if not os.path.exists(params):
