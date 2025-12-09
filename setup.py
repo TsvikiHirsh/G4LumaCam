@@ -105,9 +105,11 @@ setup(
         "lmfit",
         "matplotlib",
         "tifffile",
-        "roifile",
-        "ncrystal-geant4"
+        "roifile"
     ],
+    extras_require={
+        "ncrystal": ["ncrystal-geant4"],
+    },
     include_package_data=True,
     entry_points={
         "console_scripts": [

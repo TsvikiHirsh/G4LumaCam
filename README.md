@@ -14,6 +14,7 @@ G4LumaCam is a Geant4-based simulation package for the LumaCam event camera that
 
 - **High-Fidelity Physics**: Neutron interaction simulation based on Geant4 10.6 physics models
 - **NCrystal Support**: Optional integration with NCrystal for accurate thermal neutron scattering in crystalline materials
+- **Multiple Scintillators**: Support for EJ200, GS20, LYSO, and <sup>6</sup>LiF-ZnS:Ag scintillators with realistic optical properties
 - **Realistic Optics**: Accurate optical ray tracing through the LumaCam lens system
 - **Standard Output Format**: Generates TPX3 files compatible with multiple reconstruction tools
 - **Flexible Reconstruction**: Use EMPIR for official workflow - just like in a real experiment!
@@ -77,20 +78,39 @@ EMPIR is a proprietary reconstruction code for Timepix-3 detector data, availabl
    ```
 
 3. **Install G4LumaCam**:
+
+   **Standard installation** (without NCrystal):
    ```bash
    pip install .
    ```
 
+   **With optional NCrystal support** (for crystalline materials):
+   ```bash
+   pip install .[ncrystal]
+   ```
+
 ### NCrystal Support (Optional)
 
-G4LumaCam now supports **NCrystal** for simulating thermal neutron scattering in crystalline materials. This enables high-fidelity Bragg edge imaging and other crystallographic neutron techniques.
+G4LumaCam supports **NCrystal** for simulating thermal neutron scattering in crystalline materials. This enables high-fidelity Bragg edge imaging and other crystallographic neutron techniques.
 
-#### Installing NCrystal
+#### Installing with NCrystal
 
-NCrystal and its Geant4 bindings can be easily installed via pip:
+The easiest way to install G4LumaCam with NCrystal support is using the optional dependency syntax:
+
+```bash
+pip install .[ncrystal]
+```
+
+This will automatically install NCrystal-Geant4 and configure the build system to enable NCrystal support. During installation, you'll see:
+```
+-- NCrystal-Geant4 found - NCrystal support enabled
+```
+
+If you've already installed G4LumaCam without NCrystal, you can add it later:
 
 ```bash
 pip install ncrystal-geant4
+pip install --force-reinstall --no-deps .
 ```
 
 Alternatively, install both NCrystal and Geant4 via conda:
@@ -101,22 +121,7 @@ conda install -c conda-forge ncrystal geant4
 
 For manual installation, see the [NCrystal-Geant4 repository](https://github.com/mctools/ncrystal-geant4).
 
-#### Building with NCrystal
-
-Once NCrystal is installed, rebuild G4LumaCam to enable NCrystal support:
-
-```bash
-cd build
-cmake ../src/G4LumaCam
-make
-```
-
-The build system will automatically detect NCrystal and enable it. You'll see:
-```
--- NCrystal-Geant4 found - NCrystal support enabled
-```
-
-If NCrystal is not found, G4LumaCam will build without NCrystal support (standard NIST materials only).
+**Note**: If NCrystal is not installed, G4LumaCam will build successfully with standard NIST materials only.
 
 #### Using NCrystal Materials
 
@@ -167,6 +172,51 @@ NCrystal provides:
 - Support for 100+ crystalline materials from the NCrystal database
 
 The physics is automatically installed after `runMgr->Initialize()` and handles thermal neutrons (<5 eV). Higher energy neutrons and other particles continue to use standard Geant4 physics.
+
+## Scintillator Materials
+
+G4LumaCam supports multiple scintillator materials for neutron detection. You can select the scintillator type using the Python API or macro commands.
+
+### Available Scintillators
+
+- **EJ200** - Plastic scintillator (default)
+  - Fast decay time (~2.1 ns)
+  - High light output for charged particles
+  - Suitable for fast neutron detection via recoil protons
+
+- **GS20** - <sup>6</sup>Li-glass scintillator
+  - ~8,000 photons/neutron for thermal neutrons
+  - Good for thermal neutron imaging
+  - Contains enriched <sup>6</sup>Li for neutron capture
+
+- **LYSO** - Lutetium-yttrium oxyorthosilicate
+  - High density (7.1 g/cm³)
+  - Excellent for gamma-ray detection
+  - Also sensitive to neutrons
+
+- **ZnS** - <sup>6</sup>LiF-ZnS:Ag composite scintillator
+  - ~160,000 photons/neutron for thermal neutrons
+  - Highest light output among neutron scintillators
+  - Optimized for thermal neutron imaging
+  - Material composition: 27.8% <sup>6</sup>LiF, 55.6% ZnS, 16.6% binder
+  - Optical properties from experimental measurements
+
+### Setting Scintillator Type
+
+**Using Python API:**
+```python
+import lumacam
+
+config = lumacam.Config.neutrons_uniform_energy()
+config.scintillator_material = "ZnS"  # Options: "EJ200", "GS20", "LYSO", "ZnS"
+sim = lumacam.Simulate("my_simulation")
+df = sim.run(config)
+```
+
+**Using macro commands:**
+```bash
+/lumacam/scintillatorMaterial ZnS
+```
 
 ## Simulation Output & Reconstruction with EMPIR
 
