@@ -14,12 +14,12 @@
 #include "G4NCrystal/G4NCrystal.hh"
 #endif
 
-MaterialBuilder::MaterialBuilder() 
-    : vacuum(nullptr), air(nullptr), scintMaterialPVT(nullptr), 
-      scintMaterialGS20(nullptr), scintMaterialLYSO(nullptr), 
-      scintMaterial(nullptr), sampleMaterial(nullptr), 
-      windowMaterial(nullptr), absorberMaterial(nullptr), 
-      currentScintType(ScintType::EJ200) {
+MaterialBuilder::MaterialBuilder()
+    : vacuum(nullptr), air(nullptr), scintMaterialPVT(nullptr),
+      scintMaterialGS20(nullptr), scintMaterialLYSO(nullptr),
+      scintMaterialZnS(nullptr), scintMaterial(nullptr),
+      sampleMaterial(nullptr), windowMaterial(nullptr),
+      absorberMaterial(nullptr), currentScintType(ScintType::EJ200) {
     DefineMaterials();
     setScintillatorType(Sim::scintillatorMaterial); // Initialize with SimConfig default
 }
@@ -120,6 +120,9 @@ void MaterialBuilder::DefineMaterials() {
 
     // Scintillator (LYSO)
     buildLYSO();
+
+    // Scintillator (ZnS)
+    buildZnS();
 
     // Set default scintillator
     scintMaterial = scintMaterialPVT;
@@ -241,6 +244,99 @@ void MaterialBuilder::buildLYSO() {
     scintMaterialLYSO->GetIonisation()->SetBirksConstant(0.023 * mm/MeV);
 }
 
+void MaterialBuilder::buildZnS() {
+    G4NistManager* nist = G4NistManager::Instance();
+
+    // Create enriched 6Li element (95% 6Li, 5% 7Li)
+    G4Element* enriched_li = new G4Element("Enriched_Lithium_ZnS", "en_Li_ZnS", 2);
+    G4Isotope* li6 = new G4Isotope("6Li_ZnS", 3, 6, 6.015 * g/mole);
+    G4Isotope* li7 = new G4Isotope("7Li_ZnS", 3, 7, 7.016 * g/mole);
+    enriched_li->AddIsotope(li6, 95 * perCent);
+    enriched_li->AddIsotope(li7, 5 * perCent);
+
+    // Create 6LiF compound
+    G4Material* enriched_lif = new G4Material("Enriched_6LiF_ZnS", 2.635 * g/cm3, 2);
+    enriched_lif->AddElement(enriched_li, 1);
+    enriched_lif->AddElement(nist->FindOrBuildElement("F"), 1);
+
+    // Create ZnS compound
+    G4Material* zns_compound = new G4Material("ZnS_Compound", 4.09 * g/cm3, 2);
+    zns_compound->AddElement(nist->FindOrBuildElement("Zn"), 1);
+    zns_compound->AddElement(nist->FindOrBuildElement("S"), 1);
+
+    // Create binder (polyvinyltoluene-like organic)
+    G4Material* binder = new G4Material("Binder_ZnS", 1.032 * g/cm3, 2);
+    binder->AddElement(nist->FindOrBuildElement("C"), 9);
+    binder->AddElement(nist->FindOrBuildElement("H"), 10);
+
+    G4Material* air_component = nist->FindOrBuildMaterial("G4_AIR");
+
+    // Create 6Li-ZnS:Ag scintillator mixture (based on measured composition)
+    // Composition from paper: 1:2:0.6 ratio (LiF:ZnS:Binder by mass)
+    scintMaterialZnS = new G4Material("Scintillator6LiZnS", 2.04 * g/cm3, 4);
+    scintMaterialZnS->AddMaterial(enriched_lif, 27.8 * perCent);
+    scintMaterialZnS->AddMaterial(zns_compound, 55.6 * perCent);
+    scintMaterialZnS->AddMaterial(binder, 16.6 * perCent);
+    scintMaterialZnS->AddMaterial(air_component, 0.014 * perCent);
+
+    // Emission spectrum centered around 450 nm (2.76 eV)
+    const int nZnS = 50;
+    G4double znsEnergy[nZnS] = {
+        2.00*eV, 2.10*eV, 2.20*eV, 2.30*eV, 2.38*eV, 2.44*eV, 2.50*eV, 2.56*eV, 2.60*eV, 2.64*eV,
+        2.68*eV, 2.70*eV, 2.72*eV, 2.74*eV, 2.76*eV, 2.78*eV, 2.80*eV, 2.82*eV, 2.84*eV, 2.86*eV,
+        2.88*eV, 2.90*eV, 2.92*eV, 2.94*eV, 2.96*eV, 2.98*eV, 3.00*eV, 3.02*eV, 3.04*eV, 3.06*eV,
+        3.08*eV, 3.10*eV, 3.12*eV, 3.14*eV, 3.16*eV, 3.18*eV, 3.20*eV, 3.24*eV, 3.28*eV, 3.32*eV,
+        3.36*eV, 3.40*eV, 3.44*eV, 3.48*eV, 3.54*eV, 3.60*eV, 3.70*eV, 3.80*eV, 3.90*eV, 4.00*eV
+    };
+    G4double znsScint[nZnS] = {
+        0.001, 0.002, 0.005, 0.015, 0.035, 0.075, 0.150, 0.280, 0.420, 0.560,
+        0.690, 0.780, 0.860, 0.930, 1.000, 0.980, 0.940, 0.880, 0.810, 0.730,
+        0.640, 0.560, 0.480, 0.410, 0.350, 0.295, 0.245, 0.200, 0.165, 0.135,
+        0.110, 0.090, 0.072, 0.058, 0.047, 0.038, 0.030, 0.020, 0.013, 0.009,
+        0.006, 0.004, 0.003, 0.002, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001
+    };
+    // Optical properties from measurements
+    G4double znsRIndex[nZnS];
+    for (int i = 0; i < nZnS; i++) {
+        znsRIndex[i] = 1.597;  // Refractive index at 450 nm from measurements
+    }
+    G4double znsAbs[nZnS];
+    for (int i = 0; i < nZnS; i++) {
+        // Absorption length from diffuse transmission measurements (Fig. 7)
+        znsAbs[i] = 2.0 * mm;
+    }
+    G4double znsRayleigh[nZnS];
+    for (int i = 0; i < nZnS; i++) {
+        // Rayleigh scattering length
+        znsRayleigh[i] = 10.0 * cm;
+    }
+
+    // Set up material properties with Rayleigh scattering
+    std::vector<G4double> energiesCopy(znsEnergy, znsEnergy + nZnS);
+    std::vector<G4double> rindexCopy(znsRIndex, znsRIndex + nZnS);
+    std::vector<G4double> abslengthCopy(znsAbs, znsAbs + nZnS);
+    std::vector<G4double> rayleighCopy(znsRayleigh, znsRayleigh + nZnS);
+    std::vector<G4double> scintillationCopy(znsScint, znsScint + nZnS);
+
+    G4MaterialPropertiesTable* mpt = new G4MaterialPropertiesTable();
+    mpt->AddProperty("RINDEX", energiesCopy.data(), rindexCopy.data(), nZnS);
+    mpt->AddProperty("ABSLENGTH", energiesCopy.data(), abslengthCopy.data(), nZnS);
+    mpt->AddProperty("RAYLEIGH", energiesCopy.data(), rayleighCopy.data(), nZnS);
+    mpt->AddProperty("FASTCOMPONENT", energiesCopy.data(), scintillationCopy.data(), nZnS);
+
+    // Scintillation properties from measurements (Fig. 6)
+    mpt->AddConstProperty("SCINTILLATIONYIELD", 35000. / MeV);
+    mpt->AddConstProperty("RESOLUTIONSCALE", 3.2);
+    mpt->AddConstProperty("FASTTIMECONSTANT", 200. * ns);
+    mpt->AddConstProperty("SLOWTIMECONSTANT", 200. * ns);
+    mpt->AddConstProperty("YIELDRATIO", 1.0);
+
+    scintMaterialZnS->SetMaterialPropertiesTable(mpt);
+    // No Birks quenching - alphas in ZnS:Ag have enhanced light output
+    scintMaterialZnS->GetIonisation()->SetBirksConstant(0.0 * mm/MeV);
+    G4cout << "MaterialBuilder: Material properties set for " << scintMaterialZnS->GetName() << G4endl;
+}
+
 void MaterialBuilder::setupMaterialProperties(G4Material* mat, const G4double* energies,
                                              const G4double* rindex, const G4double* abslength,
                                              int nEntries, const G4double* scintillation) {
@@ -277,6 +373,7 @@ void MaterialBuilder::setupMaterialProperties(G4Material* mat, const G4double* e
             mpt->AddConstProperty("SCINTILLATIONRISETIME", 0.09 * ns);
             mpt->AddConstProperty("YIELDRATIO", 1.0);
         }
+        // Note: ZnS properties are set directly in buildZnS() method
     }
     mat->SetMaterialPropertiesTable(mpt);
     G4cout << "MaterialBuilder: Material properties set for " << mat->GetName() << G4endl;
@@ -305,6 +402,13 @@ void MaterialBuilder::setScintillatorType(ScintType type) {
         } else {
             G4cerr << "ERROR: scintMaterialLYSO is nullptr!" << G4endl;
         }
+    } else if (type == ScintType::ZnS) {
+        if (scintMaterialZnS) {
+            scintMaterial = scintMaterialZnS;
+            G4cout << "MaterialBuilder: Scintillator set to ZnS (6Li-ZnS:Ag)" << G4endl;
+        } else {
+            G4cerr << "ERROR: scintMaterialZnS is nullptr!" << G4endl;
+        }
     }
 }
 
@@ -316,8 +420,10 @@ void MaterialBuilder::setScintillatorType(const G4String& typeName) {
         setScintillatorType(ScintType::GS20);
     } else if (typeName == "LYSO" || typeName == "ScintillatorLYSO") {
         setScintillatorType(ScintType::LYSO);
+    } else if (typeName == "ZnS" || typeName == "Scintillator6LiZnS" || typeName == "6LiZnS") {
+        setScintillatorType(ScintType::ZnS);
     } else {
-        G4cerr << "ERROR: Unknown scintillator type: " << typeName << ". Available types: EJ200, GS20, LYSO, ScintillatorPVT, ScintillatorGS20, ScintillatorLYSO" << G4endl;
+        G4cerr << "ERROR: Unknown scintillator type: " << typeName << ". Available types: EJ200, GS20, LYSO, ZnS, ScintillatorPVT, ScintillatorGS20, ScintillatorLYSO, Scintillator6LiZnS" << G4endl;
     }
 }
 

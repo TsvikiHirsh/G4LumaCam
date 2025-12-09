@@ -37,7 +37,7 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
 
     // Scintillator material
     messenger->DeclareMethod("scintMaterial", &LumaCamMessenger::SetScintillatorMaterial)
-        .SetGuidance("Set the scintillator material (EJ200, GS20, or LYSO)")
+        .SetGuidance("Set the scintillator material (EJ200, GS20, LYSO, or ZnS)")
         .SetParameterName("material", false)
         .SetDefaultValue("EJ200");
 
@@ -202,7 +202,7 @@ void LumaCamMessenger::SetScintillatorMaterial(const G4String& materialName) {
                << scintLog->GetMaterial()->GetName() << G4endl;
     } else {
         G4cerr << "ERROR: Scintillator material " << materialName << " not found!" << G4endl;
-        G4cout << "Available scintillator materials: EJ200, GS20, LYSO" << G4endl;
+        G4cout << "Available scintillator materials: EJ200, GS20, LYSO, ZnS" << G4endl;
     }
 }
 

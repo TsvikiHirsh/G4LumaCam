@@ -12,8 +12,30 @@ class BuildGeant4Simulation(build_py):
         build_dir = os.path.join(os.getcwd(), "build")
         os.makedirs(build_dir, exist_ok=True)
 
+        # Find NCrystal CMake paths
+        cmake_prefix_paths = []
+        try:
+            import site
+            site_packages = site.getsitepackages()
+            for sp in site_packages:
+                ncrystal_geant4_cmake = os.path.join(sp, "ncrystal_geant4")
+                ncrystal_core_cmake = os.path.join(sp, "_ncrystal_core", "data", "lib", "cmake", "NCrystal")
+                if os.path.exists(ncrystal_geant4_cmake):
+                    cmake_prefix_paths.append(ncrystal_geant4_cmake)
+                if os.path.exists(ncrystal_core_cmake):
+                    cmake_prefix_paths.append(ncrystal_core_cmake)
+        except Exception as e:
+            print(f"Warning: Could not find NCrystal CMake paths: {e}")
+
+        # Set up environment for CMake
+        cmake_env = os.environ.copy()
+        if cmake_prefix_paths:
+            cmake_prefix_path = ":".join(cmake_prefix_paths)
+            cmake_env["CMAKE_PREFIX_PATH"] = cmake_prefix_path
+            print(f"Setting CMAKE_PREFIX_PATH to: {cmake_prefix_path}")
+
         # Run CMake and build
-        subprocess.check_call(["cmake", "../src/G4LumaCam"], cwd=build_dir)
+        subprocess.check_call(["cmake", "../src/G4LumaCam"], cwd=build_dir, env=cmake_env)
         subprocess.check_call(["cmake", "--build", "."], cwd=build_dir)
 
         # Path to the lumacam executable
@@ -83,7 +105,8 @@ setup(
         "lmfit",
         "matplotlib",
         "tifffile",
-        "roifile"
+        "roifile",
+        "ncrystal-geant4"
     ],
     include_package_data=True,
     entry_points={
