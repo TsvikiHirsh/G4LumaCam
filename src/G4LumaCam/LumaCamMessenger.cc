@@ -59,6 +59,18 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
         .SetParameterName("width", false)
         .SetDefaultValue("12.0");
 
+    // Virtual aperture distance
+    messenger->DeclareMethod("apertureDistance", &LumaCamMessenger::SetApertureDistance)
+        .SetGuidance("Set the virtual aperture distance from monitor in mm")
+        .SetParameterName("distance", false)
+        .SetDefaultValue("500.0");
+
+    // Virtual aperture diameter
+    messenger->DeclareMethod("apertureDiameter", &LumaCamMessenger::SetApertureDiameter)
+        .SetGuidance("Set the virtual aperture diameter in mm")
+        .SetParameterName("diameter", false)
+        .SetDefaultValue("55.0");
+
     // Batch size
     messenger->DeclareMethod("batchSize", &LumaCamMessenger::SetBatchSize)
         .SetGuidance("Set the number of events per CSV file (0 for single file)")
@@ -278,4 +290,20 @@ void LumaCamMessenger::SetFrequency(G4double freq) {
     }
     Sim::FREQ = freq;
     G4cout << "Pulse frequency set to: " << freq / 1000 << " kHz" << G4endl;
+}
+
+void LumaCamMessenger::SetApertureDistance(G4double distance) {
+    if (distance <= 0) {
+        G4cerr << "ERROR: Aperture distance must be positive!" << G4endl;
+        return;
+    }
+    Sim::SetApertureDistance(distance);
+}
+
+void LumaCamMessenger::SetApertureDiameter(G4double diameter) {
+    if (diameter <= 0) {
+        G4cerr << "ERROR: Aperture diameter must be positive!" << G4endl;
+        return;
+    }
+    Sim::SetApertureDiameter(diameter);
 }

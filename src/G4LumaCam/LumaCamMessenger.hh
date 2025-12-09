@@ -20,6 +20,8 @@ public:
     void SetScintThickness(G4double thickness);
     void SetSampleThickness(G4double thickness);
     void SetSampleWidth(G4double width);
+    void SetApertureDistance(G4double distance);
+    void SetApertureDiameter(G4double diameter);
     void SetFlux(G4double flux);
     void SetFrequency(G4double freq);
     void SetBatchSize(G4int size);

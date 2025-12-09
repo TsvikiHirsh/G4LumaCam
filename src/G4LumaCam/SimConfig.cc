@@ -21,6 +21,8 @@ namespace Sim {
     G4double FREQ = 0.0; // Default: no pulsed structure
     std::vector<G4double> pulseTimes; // Trigger times in ns
     std::vector<G4int> neutronsPerPulse; // Neutrons per pulse
+    G4double APERTURE_DISTANCE = 500.0; // Default: 500 mm from monitor
+    G4double APERTURE_DIAMETER = 55.0; // Default: 55 mm diameter (±27.5 mm)
 
     void SetScintThickness(G4double thickness) {
         if (thickness > 0) {
@@ -46,6 +48,24 @@ namespace Sim {
             G4cout << "Sample width set to: " << width / cm << " cm" << G4endl;
         } else {
             G4cerr << "ERROR: Sample width must be positive!" << G4endl;
+        }
+    }
+
+    void SetApertureDistance(G4double distance) {
+        if (distance > 0) {
+            APERTURE_DISTANCE = distance;
+            G4cout << "Virtual aperture distance set to: " << distance << " mm" << G4endl;
+        } else {
+            G4cerr << "ERROR: Aperture distance must be positive!" << G4endl;
+        }
+    }
+
+    void SetApertureDiameter(G4double diameter) {
+        if (diameter > 0) {
+            APERTURE_DIAMETER = diameter;
+            G4cout << "Virtual aperture diameter set to: " << diameter << " mm" << G4endl;
+        } else {
+            G4cerr << "ERROR: Aperture diameter must be positive!" << G4endl;
         }
     }
 

@@ -26,10 +26,14 @@ namespace Sim {
     extern G4double FREQ; // Pulse frequency in Hz
     extern std::vector<G4double> pulseTimes; // Trigger times for pulses in ns
     extern std::vector<G4int> neutronsPerPulse; // Neutrons per pulse
+    extern G4double APERTURE_DISTANCE; // Virtual aperture distance from monitor in mm
+    extern G4double APERTURE_DIAMETER; // Virtual aperture diameter in mm
 
     void SetScintThickness(G4double thickness);
     void SetSampleThickness(G4double thickness);
     void SetSampleWidth(G4double width);
+    void SetApertureDistance(G4double distance);
+    void SetApertureDiameter(G4double diameter);
     void ComputePulseStructure(G4int totalNeutrons); // Compute pulse times and neutrons per pulse
 }
 

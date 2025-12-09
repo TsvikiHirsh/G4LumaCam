@@ -135,11 +135,16 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
 
     // Process photons that reach the monitor
     if (volName == "MonitorPhys" && particleName == "opticalphoton") {
-        lensPos[0] = postStep->GetPosition().x() / mm + 500. * preStep->GetMomentumDirection().x();
-        lensPos[1] = postStep->GetPosition().y() / mm + 500. * preStep->GetMomentumDirection().y();
+        // Use configurable aperture parameters
+        G4double aperture_distance = Sim::APERTURE_DISTANCE;
+        G4double aperture_half_width = Sim::APERTURE_DIAMETER / 2.0;
+
+        lensPos[0] = postStep->GetPosition().x() / mm + aperture_distance * preStep->GetMomentumDirection().x();
+        lensPos[1] = postStep->GetPosition().y() / mm + aperture_distance * preStep->GetMomentumDirection().y();
 
         // Check if photon is within acceptance window
-        if (lensPos[0] > -27.5 && lensPos[0] < 27.5 && lensPos[1] > -27.5 && lensPos[1] < 27.5) {
+        if (lensPos[0] > -aperture_half_width && lensPos[0] < aperture_half_width &&
+            lensPos[1] > -aperture_half_width && lensPos[1] < aperture_half_width) {
             if (tracks.find(parentID) == tracks.end()) {
                 tracks[parentID] = {"unknown", neutronPos[0], neutronPos[1], neutronPos[2], neutronEnergy, true, 0., 0., 0., 0., 0., 0.};
             }
@@ -312,21 +317,21 @@ void EventProcessor::writeData() {
         
         // MEDIUM PRECISION: parent position (mm)
         dataFile << std::setprecision(4)
-                 << p.px << "," 
-                 << p.py << "," 
+                 << p.px << ","
+                 << p.py << ","
                  << p.pz << ",";
-        
-        // MEDIUM PRECISION: energies (MeV)
-        dataFile << std::setprecision(4) << p.parentEnergy << ",";
-        
+
+        // SCIENTIFIC NOTATION: parent energy (MeV)
+        dataFile << std::scientific << std::setprecision(6) << p.parentEnergy << "," << std::fixed;
+
         // MEDIUM PRECISION: neutron position (mm)
         dataFile << std::setprecision(4)
-                 << p.nx << "," 
-                 << p.ny << "," 
+                 << p.nx << ","
+                 << p.ny << ","
                  << p.nz << ",";
-        
-        // MEDIUM PRECISION: neutron energy (MeV)
-        dataFile << std::setprecision(4) << p.neutronEnergy << "\n";
+
+        // SCIENTIFIC NOTATION: neutron energy (MeV)
+        dataFile << std::scientific << std::setprecision(6) << p.neutronEnergy << "\n" << std::fixed;
     }
     dataFile.flush();
 }
