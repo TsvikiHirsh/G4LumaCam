@@ -61,8 +61,10 @@ class Config:
     sample_material: str = "G4_Galactic"  # Material of the sample
     scintillator: str = "EJ200"  # Scintillator type: PVT, EJ-200, GS20
     sample_thickness: float = 0.2  # Sample thickness in cm (default 0.2 cm = 200 microns)
-    sample_width: float = 12.0  # Sample width in cm (default 12 cm)  
+    sample_width: float = 12.0  # Sample width in cm (default 12 cm)
     scintillator_thickness: float = 20  # Scintillator thickness in mm (default is 20 mm)
+    aperture_diameter: float = 55.0  # Virtual aperture diameter in mm (default 55 mm)
+    aperture_distance: float = 500.0  # Virtual aperture distance from monitor in mm (default 500 mm)
     csv_batch_size: int = 0
     # Ion parameters for radioactive decay
     ion_z: Optional[int] = None  # Atomic number
@@ -379,6 +381,8 @@ class Config:
                 sample_thickness=2.0,  # 20 mm sample thickness
                 sample_width=12.0,  # 12 cm = 120 mm
                 scintillator_thickness=0.1,  # 1 mm scintillator thickness
+                aperture_diameter=10.0,
+                aperture_distance=500.0,
                 csv_batch_size=5000,
             )
 
@@ -445,6 +449,8 @@ class Config:
 /lumacam/scintMaterial {self.scintillator}
 /lumacam/sampleThickness {self.sample_thickness} cm
 /lumacam/sampleWidth {self.sample_width} cm
+/lumacam/apertureDiameter {self.aperture_diameter}
+/lumacam/apertureDistance {self.aperture_distance}
 /lumacam/scintThickness {self.scintillator_thickness} cm
 /lumacam/sampleMaterial {self.sample_material}
 /lumacam/batchSize {self.csv_batch_size}
