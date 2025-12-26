@@ -1,5 +1,14 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
 src/G4LumaCam.egg-info/*
 build/*
+
+# Jupyter
 notebooks/.ipynb_checkpoints/*
 notebooks/data
 empir

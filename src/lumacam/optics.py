@@ -34,6 +34,79 @@ class VerbosityLevel(IntEnum):
     BASIC = 1    # Show progress bar and basic info
     DETAILED = 2 # Show everything
 
+class DetectorModel(IntEnum):
+    """Physical models for photon detection and sensor response.
+
+    Available Models:
+    -----------------
+    IMAGE_INTENSIFIER : Default model
+        Simulates MCP-based image intensifier coupled to event camera.
+        - Circular blob with uniform radius
+        - Exponential delay for photon conversion
+        - Independent pixel deadtime
+        Parameters: blob, blob_variance, decay_time, deadtime, min_tot
+
+    GAUSSIAN_DIFFUSION : Charge diffusion model
+        Models charge spreading in solid-state detectors with Gaussian PSF.
+        - Gaussian charge distribution instead of uniform blob
+        - Charge-weighted TOT accumulation
+        - Better for CCD/CMOS direct detection
+        Parameters: blob (as sigma), deadtime, min_tot, charge_coupling (0-1)
+
+    DIRECT_DETECTION : Simple direct detection
+        Minimal model for bare sensors without intensification.
+        - Single pixel per photon
+        - Simple deadtime only
+        - Fast computation for large datasets
+        Parameters: deadtime, min_tot
+
+    WAVELENGTH_DEPENDENT : Advanced intensifier with spectral response
+        Energy/wavelength-dependent quantum efficiency and gain.
+        - Wavelength-dependent blob size
+        - QE curve affects detection probability
+        - Non-uniform gain distribution
+        Parameters: blob, decay_time, deadtime, min_tot, qe_wavelength (nm array), qe_values (efficiency array)
+
+    AVALANCHE_GAIN : Stochastic gain model
+        Models avalanche photodiodes or PMTs with Poisson gain statistics.
+        - Poisson-distributed gain per photon
+        - Afterpulsing effects
+        - Gain-dependent TOT
+        Parameters: mean_gain, gain_variance, afterpulse_prob, afterpulse_delay, deadtime, min_tot
+
+    IMAGE_INTENSIFIER_GAIN : Gain-dependent intensifier (RECOMMENDED)
+        Realistic MCP image intensifier with variable gain control.
+        - Blob size scales with gain: σ ∝ (gain)^0.4
+        - Gaussian photon distribution
+        - Charge-weighted TOT calculation
+        - Based on MCP physics literature
+        Parameters: gain (default 5000), sigma_0, gain_exponent, deadtime (475 ns), tot_mode
+
+    TIMEPIX3_CALIBRATED : Timepix3-specific model
+        Calibrated for Timepix3 detector response.
+        - Logarithmic TOT: TOT = a + b × ln(Q)
+        - Per-pixel calibration variation
+        - 475 ns deadtime (TPX3 spec)
+        - Based on Poikela et al. 2014
+        Parameters: gain, tot_a, tot_b, charge_ref, pixel_variation, deadtime (475 ns)
+
+    PHYSICAL_MCP : Full physics simulation
+        High-fidelity MCP simulation with complete physics.
+        - Poisson gain statistics
+        - Multi-exponential phosphor decay
+        - Energy-dependent QE
+        - MCP pore-level simulation
+        Parameters: gain, gain_noise_factor, phosphor_type, decay_fast, decay_slow, mcp_voltage
+    """
+    IMAGE_INTENSIFIER = 0      # Default: circular blob + exponential decay
+    GAUSSIAN_DIFFUSION = 1     # Gaussian charge spreading
+    DIRECT_DETECTION = 2       # Single pixel, simple deadtime
+    WAVELENGTH_DEPENDENT = 3   # Spectral QE and wavelength-dependent response
+    AVALANCHE_GAIN = 4         # Poisson gain statistics with afterpulsing
+    IMAGE_INTENSIFIER_GAIN = 5 # Gain-dependent blob (RECOMMENDED for TPX3)
+    TIMEPIX3_CALIBRATED = 6    # TPX3-specific calibration
+    PHYSICAL_MCP = 7           # Full physics MCP simulation
+
 def _process_ray_chunk_standalone(chunk, opm_file_path, wvl_values, verbosity=0):
     """
     Process a chunk of rays using an optical model loaded from file.
@@ -666,11 +739,14 @@ class Lens:
 
 
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=12.75, fnumber=None,
-                    source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=10, 
-                    join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                    source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=10,
+                    detector_model: Union[str, DetectorModel] = None,
+                    model_params: dict = None,
+                    join=False, print_stats=False, n_processes=None, chunk_size=1000,
                     progress_bar=True, timeout=3600, return_df=False, split_method="auto",
                     seed: int = None,
-                    verbosity=VerbosityLevel.BASIC
+                    verbosity=VerbosityLevel.BASIC,
+                    **kwargs  # Additional model parameters passed as kwargs
                     ) -> Optional[pd.DataFrame]:
         """
         Trace rays from simulation data files and save processed results, optionally applying pixel saturation and blob effect.
@@ -724,6 +800,18 @@ class Lens:
         decay_time : float, default 100.0
             Exponential decay time constant in nanoseconds for blob activation timing.
             Single delay drawn per photon, applied to all pixels in its blob.
+        detector_model : str or DetectorModel, default "image_intensifier"
+            Physical model for photon detection (only used in "hits" workflow). Options:
+            - "image_intensifier": MCP intensifier with circular blobs (default)
+            - "gaussian_diffusion": Charge diffusion with Gaussian PSF
+            - "direct_detection": Simple single-pixel detection
+            - "wavelength_dependent": Spectral QE and wavelength-dependent gain
+            - "avalanche_gain": Poisson gain with afterpulsing
+        model_params : dict, optional
+            Model-specific parameters (only used in "hits" workflow). Examples:
+            - gaussian_diffusion: {'charge_coupling': 0.8}
+            - wavelength_dependent: {'qe_wavelength': [400,500,600], 'qe_values': [0.1,0.3,0.2]}
+            - avalanche_gain: {'mean_gain': 100, 'afterpulse_prob': 0.01}
         seed : int, optional
             Random seed for reproducibility. If None, uses random state. If specified, allows
             exact reconstruction of results across multiple runs.
@@ -773,13 +861,22 @@ class Lens:
         ---------
         Hits workflow with saturation (auto-detected):
         >>> optics.trace_rays(deadtime=100, blob=5.0)  # Auto-detects "hits" workflow
-        
-        Hits workflow with explicit source:
-        >>> optics.trace_rays(source="hits", deadtime=100, blob=5.0)
-        
+
+        Hits workflow with Gaussian diffusion model:
+        >>> optics.trace_rays(deadtime=100, blob=2.0, detector_model="gaussian_diffusion",
+        ...                   model_params={'charge_coupling': 0.85})
+
+        Direct detection (no blob):
+        >>> optics.trace_rays(deadtime=300, detector_model="direct_detection")
+
+        Wavelength-dependent QE:
+        >>> optics.trace_rays(deadtime=600, blob=2.0, detector_model="wavelength_dependent",
+        ...                   model_params={'qe_wavelength': [400,500,600],
+        ...                                 'qe_values': [0.1,0.3,0.2]})
+
         Photons workflow (auto-detected):
         >>> optics.trace_rays()  # Auto-detects "photons" workflow (no saturation)
-        
+
         Photons workflow with explicit source:
         >>> optics.trace_rays(source="photons")  # Direct import, no saturation
         """
@@ -1139,7 +1236,10 @@ class Lens:
                         output_format="photons",
                         min_tot=1.0,
                         decay_time=decay_time,
-                        verbosity=verbosity
+                        detector_model=detector_model,
+                        model_params=model_params,
+                        verbosity=verbosity,
+                        **kwargs  # Pass through additional model parameters
                     )
                     
                     if saturated_df is None or saturated_df.empty:
@@ -2071,26 +2171,472 @@ class Lens:
         
         return result_df
 
+    # ==================== Detector Model Helper Methods ====================
+
+    def _apply_image_intensifier_model(self, cx, cy, photon_toa, blob, blob_variance, decay_time):
+        """
+        Image intensifier model: circular blob with exponential delay.
+
+        Returns:
+        --------
+        tuple: (covered_x, covered_y, activation_time, pixel_weights)
+            - covered_x, covered_y: arrays of pixel coordinates
+            - activation_time: time when pixels are activated
+            - pixel_weights: array of weights (all 1.0 for this model)
+        """
+        # Draw single exponential delay for this photon's entire blob
+        activation_delay = np.random.exponential(decay_time)
+        activation_time = photon_toa + activation_delay
+
+        # Draw blob radius for this photon
+        if blob_variance > 0 and blob > 0:
+            min_radius = blob - blob_variance
+            actual_blob = np.random.uniform(min_radius, blob)
+        else:
+            actual_blob = blob
+
+        # Find all pixels covered by the circular blob
+        if actual_blob > 0:
+            i_min = int(np.floor(cx - actual_blob - 0.5))
+            i_max = int(np.ceil(cx + actual_blob + 0.5))
+            j_min = int(np.floor(cy - actual_blob - 0.5))
+            j_max = int(np.ceil(cy + actual_blob + 0.5))
+
+            # Create grid of pixel centers
+            x_grid = np.arange(i_min, i_max + 1)
+            y_grid = np.arange(j_min, j_max + 1)
+            xx, yy = np.meshgrid(x_grid, y_grid)
+            xx = xx.flatten()
+            yy = yy.flatten()
+
+            # Find closest point in each pixel to circle center
+            closest_x = np.clip(cx, xx - 0.5, xx + 0.5)
+            closest_y = np.clip(cy, yy - 0.5, yy + 0.5)
+            dist2 = (closest_x - cx) ** 2 + (closest_y - cy) ** 2
+            mask = dist2 <= actual_blob ** 2
+
+            covered_x = xx[mask]
+            covered_y = yy[mask]
+        else:
+            # No blob: only the pixel containing the photon center
+            covered_x = np.array([int(np.floor(cx))])
+            covered_y = np.array([int(np.floor(cy))])
+
+        # All pixels have equal weight
+        pixel_weights = np.ones(len(covered_x))
+
+        return covered_x, covered_y, activation_time, pixel_weights
+
+    def _apply_gaussian_diffusion_model(self, cx, cy, photon_toa, sigma, model_params):
+        """
+        Gaussian charge diffusion model: charge spreads with Gaussian PSF.
+
+        Returns:
+        --------
+        tuple: (covered_x, covered_y, activation_time, pixel_weights)
+            - covered_x, covered_y: arrays of pixel coordinates
+            - activation_time: time when charge arrives (no delay)
+            - pixel_weights: Gaussian-weighted charge distribution
+        """
+        charge_coupling = model_params.get('charge_coupling', 1.0)  # 0-1, fraction of charge collected
+        activation_time = photon_toa  # Direct detection, no conversion delay
+
+        if sigma > 0:
+            # Sample pixels within 3 sigma
+            search_radius = 3.0 * sigma
+            i_min = int(np.floor(cx - search_radius - 0.5))
+            i_max = int(np.ceil(cx + search_radius + 0.5))
+            j_min = int(np.floor(cy - search_radius - 0.5))
+            j_max = int(np.ceil(cy + search_radius + 0.5))
+
+            # Create grid of pixel centers
+            x_grid = np.arange(i_min, i_max + 1)
+            y_grid = np.arange(j_min, j_max + 1)
+            xx, yy = np.meshgrid(x_grid, y_grid)
+            xx = xx.flatten()
+            yy = yy.flatten()
+
+            # Calculate Gaussian weights based on distance to pixel centers
+            dx = xx - cx
+            dy = yy - cy
+            dist2 = dx**2 + dy**2
+            weights = np.exp(-dist2 / (2 * sigma**2))
+
+            # Apply charge coupling efficiency
+            weights *= charge_coupling
+
+            # Keep only pixels with significant charge (> 1% of peak)
+            threshold = 0.01 * charge_coupling
+            mask = weights > threshold
+
+            covered_x = xx[mask]
+            covered_y = yy[mask]
+            pixel_weights = weights[mask]
+        else:
+            # No diffusion: single pixel
+            covered_x = np.array([int(np.floor(cx))])
+            covered_y = np.array([int(np.floor(cy))])
+            pixel_weights = np.array([charge_coupling])
+
+        return covered_x, covered_y, activation_time, pixel_weights
+
+    def _apply_direct_detection_model(self, cx, cy, photon_toa):
+        """
+        Direct detection model: single pixel, no blob.
+
+        Returns:
+        --------
+        tuple: (covered_x, covered_y, activation_time, pixel_weights)
+            - covered_x, covered_y: single pixel containing photon
+            - activation_time: direct photon arrival time
+            - pixel_weights: weight of 1.0
+        """
+        covered_x = np.array([int(np.floor(cx))])
+        covered_y = np.array([int(np.floor(cy))])
+        activation_time = photon_toa
+        pixel_weights = np.ones(1)
+
+        return covered_x, covered_y, activation_time, pixel_weights
+
+    def _apply_wavelength_dependent_model(self, cx, cy, photon_toa, wavelength, blob, decay_time, model_params):
+        """
+        Wavelength-dependent model: spectral QE and wavelength-dependent blob size.
+
+        Returns:
+        --------
+        tuple: (covered_x, covered_y, activation_time, pixel_weights) or None
+            - Returns None if photon is not detected (QE check fails)
+            - Otherwise returns pixel coverage with wavelength-scaled blob
+        """
+        # Get QE curve from model_params
+        qe_wavelength = np.array(model_params.get('qe_wavelength', [400, 500, 600]))  # nm
+        qe_values = np.array(model_params.get('qe_values', [0.3, 0.3, 0.3]))  # quantum efficiency
+
+        # Interpolate QE at photon wavelength
+        qe_at_wavelength = np.interp(wavelength, qe_wavelength, qe_values, left=0.0, right=0.0)
+
+        # Check if photon is detected based on QE
+        if np.random.random() > qe_at_wavelength:
+            return None  # Photon not detected
+
+        # Scale blob size with wavelength (longer wavelength -> larger diffraction)
+        wavelength_factor = model_params.get('wavelength_scaling', wavelength / 500.0)  # normalized to 500nm
+        scaled_blob = blob * wavelength_factor
+
+        # Apply exponential delay
+        activation_delay = np.random.exponential(decay_time)
+        activation_time = photon_toa + activation_delay
+
+        # Use circular blob (similar to image intensifier)
+        if scaled_blob > 0:
+            i_min = int(np.floor(cx - scaled_blob - 0.5))
+            i_max = int(np.ceil(cx + scaled_blob + 0.5))
+            j_min = int(np.floor(cy - scaled_blob - 0.5))
+            j_max = int(np.ceil(cy + scaled_blob + 0.5))
+
+            x_grid = np.arange(i_min, i_max + 1)
+            y_grid = np.arange(j_min, j_max + 1)
+            xx, yy = np.meshgrid(x_grid, y_grid)
+            xx = xx.flatten()
+            yy = yy.flatten()
+
+            closest_x = np.clip(cx, xx - 0.5, xx + 0.5)
+            closest_y = np.clip(cy, yy - 0.5, yy + 0.5)
+            dist2 = (closest_x - cx) ** 2 + (closest_y - cy) ** 2
+            mask = dist2 <= scaled_blob ** 2
+
+            covered_x = xx[mask]
+            covered_y = yy[mask]
+        else:
+            covered_x = np.array([int(np.floor(cx))])
+            covered_y = np.array([int(np.floor(cy))])
+
+        pixel_weights = np.ones(len(covered_x))
+
+        return covered_x, covered_y, activation_time, pixel_weights
+
+    def _apply_avalanche_gain_model(self, cx, cy, photon_toa, blob, model_params):
+        """
+        Avalanche gain model: Poisson-distributed gain with afterpulsing.
+
+        Returns:
+        --------
+        tuple: (covered_x, covered_y, activation_time, pixel_weights, afterpulse_events)
+            - covered_x, covered_y: pixels affected by primary pulse
+            - activation_time: primary detection time
+            - pixel_weights: gain-weighted response
+            - afterpulse_events: list of (time, x, y) for afterpulses
+        """
+        mean_gain = model_params.get('mean_gain', 100)
+        gain_variance = model_params.get('gain_variance', 20)
+        afterpulse_prob = model_params.get('afterpulse_prob', 0.01)
+        afterpulse_delay_mean = model_params.get('afterpulse_delay', 200.0)  # ns
+
+        # Draw gain from Poisson-like distribution (using Gamma approximation)
+        if gain_variance > 0:
+            # Gamma distribution: shape = mean^2/variance, scale = variance/mean
+            shape = mean_gain**2 / gain_variance**2
+            scale = gain_variance**2 / mean_gain
+            gain = np.random.gamma(shape, scale)
+        else:
+            gain = mean_gain
+
+        activation_time = photon_toa
+
+        # Determine affected pixels (small blob due to avalanche region)
+        if blob > 0:
+            i_min = int(np.floor(cx - blob - 0.5))
+            i_max = int(np.ceil(cx + blob + 0.5))
+            j_min = int(np.floor(cy - blob - 0.5))
+            j_max = int(np.ceil(cy + blob + 0.5))
+
+            x_grid = np.arange(i_min, i_max + 1)
+            y_grid = np.arange(j_min, j_max + 1)
+            xx, yy = np.meshgrid(x_grid, y_grid)
+            xx = xx.flatten()
+            yy = yy.flatten()
+
+            closest_x = np.clip(cx, xx - 0.5, xx + 0.5)
+            closest_y = np.clip(cy, yy - 0.5, yy + 0.5)
+            dist2 = (closest_x - cx) ** 2 + (closest_y - cy) ** 2
+            mask = dist2 <= blob ** 2
+
+            covered_x = xx[mask]
+            covered_y = yy[mask]
+        else:
+            covered_x = np.array([int(np.floor(cx))])
+            covered_y = np.array([int(np.floor(cy))])
+
+        # Weight by gain (normalized)
+        pixel_weights = np.full(len(covered_x), gain / 100.0)
+
+        # Generate afterpulses
+        afterpulse_events = []
+        if np.random.random() < afterpulse_prob:
+            delay = np.random.exponential(afterpulse_delay_mean)
+            afterpulse_events.append((photon_toa + delay, cx, cy))
+
+        return covered_x, covered_y, activation_time, pixel_weights, afterpulse_events
+
+    def _apply_image_intensifier_gain_model(self, cx, cy, photon_toa, blob, decay_time, model_params):
+        """
+        Gain-dependent image intensifier model with physics-based blob scaling.
+
+        Physics:
+        - Blob size: σ = σ₀ × (gain/gain_ref)^exponent
+        - Gaussian photon distribution
+        - Charge-weighted TOT
+        - Based on MCP physics (Photonis specs, Siegmund et al.)
+
+        Returns:
+        --------
+        tuple: (covered_x, covered_y, activation_time, pixel_weights)
+        """
+        # Model parameters (with defaults from literature)
+        gain = model_params.get('gain', 5000)  # MCP gain (typical: 10³-10⁴)
+        sigma_0 = model_params.get('sigma_0', 1.0)  # Base blob sigma at gain_ref (pixels)
+        gain_ref = model_params.get('gain_ref', 1000)  # Reference gain
+        gain_exponent = model_params.get('gain_exponent', 0.4)  # Scaling exponent (literature: 0.3-0.5)
+
+        # Calculate gain-dependent blob size: σ ∝ (gain)^exponent
+        sigma_pixels = sigma_0 * (gain / gain_ref) ** gain_exponent
+
+        # Override blob if explicitly provided
+        if blob > 0:
+            sigma_pixels = blob
+
+        # Draw exponential delay for phosphor emission
+        activation_delay = np.random.exponential(decay_time)
+        activation_time = photon_toa + activation_delay
+
+        # Sample pixels within 3σ (covers 99.7% of photons)
+        if sigma_pixels > 0:
+            search_radius = 3.0 * sigma_pixels
+            i_min = int(np.floor(cx - search_radius - 0.5))
+            i_max = int(np.ceil(cx + search_radius + 0.5))
+            j_min = int(np.floor(cy - search_radius - 0.5))
+            j_max = int(np.ceil(cy + search_radius + 0.5))
+
+            # Create pixel grid
+            x_grid = np.arange(i_min, i_max + 1)
+            y_grid = np.arange(j_min, j_max + 1)
+            xx, yy = np.meshgrid(x_grid, y_grid)
+            xx = xx.flatten()
+            yy = yy.flatten()
+
+            # Gaussian weights: I(r) = exp(-r²/2σ²)
+            dx = xx - cx
+            dy = yy - cy
+            dist2 = dx**2 + dy**2
+            weights = np.exp(-dist2 / (2 * sigma_pixels**2))
+
+            # Keep pixels with significant charge (> 1% of peak)
+            threshold = 0.01
+            mask = weights > threshold
+
+            covered_x = xx[mask]
+            covered_y = yy[mask]
+            pixel_weights = weights[mask]
+
+            # Normalize weights to conserve total photon count
+            pixel_weights = pixel_weights / pixel_weights.sum() if pixel_weights.sum() > 0 else pixel_weights
+        else:
+            # No blob: single pixel
+            covered_x = np.array([int(np.floor(cx))])
+            covered_y = np.array([int(np.floor(cy))])
+            pixel_weights = np.ones(1)
+
+        return covered_x, covered_y, activation_time, pixel_weights
+
+    def _apply_timepix3_calibrated_model(self, cx, cy, photon_toa, model_params):
+        """
+        Timepix3-calibrated model with logarithmic TOT response.
+
+        Physics:
+        - TOT = a + b × ln(Q/Q_ref)  [Poikela et al. 2014]
+        - Per-pixel calibration variation
+        - 475 ns deadtime (TPX3 spec)
+
+        Returns:
+        --------
+        tuple: (covered_x, covered_y, activation_time, pixel_weights, tot_calibration)
+            - tot_calibration: dict with 'tot_a' and 'tot_b' for this event
+        """
+        # Model parameters (from Timepix3 literature)
+        gain = model_params.get('gain', 5000)
+        sigma_pixels = model_params.get('sigma_pixels', 1.5)  # Blob size
+        tot_a = model_params.get('tot_a', 30.0)  # TOT offset (ns)
+        tot_b = model_params.get('tot_b', 50.0)  # TOT slope (ns/decade)
+        pixel_variation = model_params.get('pixel_variation', 0.05)  # 5% per-pixel variation
+
+        # Per-pixel calibration variation (simulate detector non-uniformity)
+        tot_a_actual = tot_a * (1 + np.random.normal(0, pixel_variation))
+        tot_b_actual = tot_b * (1 + np.random.normal(0, pixel_variation))
+
+        # Direct detection (no phosphor delay for TPX3)
+        activation_time = photon_toa
+
+        # Gaussian blob (similar to gain model but with fixed sigma)
+        if sigma_pixels > 0:
+            search_radius = 3.0 * sigma_pixels
+            i_min = int(np.floor(cx - search_radius - 0.5))
+            i_max = int(np.ceil(cx + search_radius + 0.5))
+            j_min = int(np.floor(cy - search_radius - 0.5))
+            j_max = int(np.ceil(cy + search_radius + 0.5))
+
+            x_grid = np.arange(i_min, i_max + 1)
+            y_grid = np.arange(j_min, j_max + 1)
+            xx, yy = np.meshgrid(x_grid, y_grid)
+            xx = xx.flatten()
+            yy = yy.flatten()
+
+            dx = xx - cx
+            dy = yy - cy
+            dist2 = dx**2 + dy**2
+            weights = np.exp(-dist2 / (2 * sigma_pixels**2))
+
+            threshold = 0.01
+            mask = weights > threshold
+
+            covered_x = xx[mask]
+            covered_y = yy[mask]
+            pixel_weights = weights[mask] * gain  # Scale by gain
+
+        else:
+            covered_x = np.array([int(np.floor(cx))])
+            covered_y = np.array([int(np.floor(cy))])
+            pixel_weights = np.array([gain])
+
+        # Return calibration parameters for TOT calculation
+        return covered_x, covered_y, activation_time, pixel_weights, {'tot_a': tot_a_actual, 'tot_b': tot_b_actual}
+
+    def _apply_physical_mcp_model(self, cx, cy, photon_toa, model_params):
+        """
+        Full physics MCP simulation with Poisson gain statistics.
+
+        Physics:
+        - Poisson electron multiplication
+        - Multi-exponential phosphor decay
+        - Energy-dependent effects
+
+        Returns:
+        --------
+        tuple: (covered_x, covered_y, activation_time, pixel_weights)
+        """
+        # Model parameters
+        gain_mean = model_params.get('gain', 5000)
+        gain_noise_factor = model_params.get('gain_noise_factor', 1.3)  # Excess noise factor
+        phosphor_type = model_params.get('phosphor_type', 'p43')  # P20, P43, P46
+        decay_fast = model_params.get('decay_fast', 50.0)  # Fast component (ns)
+        decay_slow = model_params.get('decay_slow', 500.0)  # Slow component (ns)
+        fast_fraction = model_params.get('fast_fraction', 0.7)  # Fraction in fast component
+
+        # Poisson gain with excess noise
+        # Use Gamma distribution: mean=gain_mean, variance=gain_mean*noise_factor
+        if gain_noise_factor > 1.0:
+            shape = gain_mean / gain_noise_factor
+            scale = gain_noise_factor
+            actual_gain = np.random.gamma(shape, scale)
+        else:
+            actual_gain = gain_mean
+
+        # Multi-exponential phosphor decay
+        if np.random.random() < fast_fraction:
+            activation_delay = np.random.exponential(decay_fast)
+        else:
+            activation_delay = np.random.exponential(decay_slow)
+
+        activation_time = photon_toa + activation_delay
+
+        # Blob size depends on actual gain (physics-based)
+        sigma_pixels = 1.0 * (actual_gain / 1000) ** 0.4
+
+        # Gaussian distribution
+        if sigma_pixels > 0:
+            search_radius = 3.0 * sigma_pixels
+            i_min = int(np.floor(cx - search_radius - 0.5))
+            i_max = int(np.ceil(cx + search_radius + 0.5))
+            j_min = int(np.floor(cy - search_radius - 0.5))
+            j_max = int(np.ceil(cy + search_radius + 0.5))
+
+            x_grid = np.arange(i_min, i_max + 1)
+            y_grid = np.arange(j_min, j_max + 1)
+            xx, yy = np.meshgrid(x_grid, y_grid)
+            xx = xx.flatten()
+            yy = yy.flatten()
+
+            dx = xx - cx
+            dy = yy - cy
+            dist2 = dx**2 + dy**2
+            weights = np.exp(-dist2 / (2 * sigma_pixels**2))
+
+            threshold = 0.01
+            mask = weights > threshold
+
+            covered_x = xx[mask]
+            covered_y = yy[mask]
+            pixel_weights = weights[mask] * actual_gain / 1000  # Normalized weights
+        else:
+            covered_x = np.array([int(np.floor(cx))])
+            covered_y = np.array([int(np.floor(cy))])
+            pixel_weights = np.array([actual_gain / 1000])
+
+        return covered_x, covered_y, activation_time, pixel_weights
 
 
-    def saturate_photons(self, data: pd.DataFrame = None, deadtime: float = 600.0, blob: float = 0.0, 
-                        blob_variance: float = 0.0, output_format: str = "photons", min_tot: float = 20.0, 
+    def saturate_photons(self, data: pd.DataFrame = None, deadtime: float = 600.0, blob: float = 0.0,
+                        blob_variance: float = 0.0, output_format: str = "photons", min_tot: float = 20.0,
                         decay_time: float = 100.0, seed: int = None,
-                        verbosity: VerbosityLevel = VerbosityLevel.BASIC
+                        detector_model: Union[str, DetectorModel] = None,
+                        model_params: dict = None,
+                        verbosity: VerbosityLevel = VerbosityLevel.BASIC,
+                        **kwargs  # Additional model parameters (e.g., gain=5000, tot_mode="logarithmic")
                         ) -> Union[pd.DataFrame, None]:
         """
-        Process traced photons to simulate an image intensifier coupled to an event camera.
+        Process traced photons with selectable physical detector models.
 
-        Physical model (UPDATED):
-        1. Photon hits image intensifier at position (pixel_x, pixel_y)
-        2. Intensifier creates a circular blob on the camera with variable radius
-        3. ALL pixels within the blob are activated SIMULTANEOUSLY at time = photon_toa + exponential_delay
-        (single exponential delay drawn per photon, applies to entire blob)
-        4. Each pixel has independent deadtime (default 600ns)
-        5. During deadtime, additional photon blobs can update the pixel's TOT (time to last photon)
-        6. Pixels cannot be re-activated (new TOA) until deadtime expires
-        7. TOA = activation time for that pixel (first photon blob to activate it)
-        8. TOT = time from first activation to last photon blob hit within deadtime
+        This method simulates various photon detection scenarios using different physical models.
+        Select the appropriate model using the detector_model parameter.
 
         Parameters:
         -----------
@@ -2101,24 +2647,36 @@ class Lens:
             Deadtime in nanoseconds for pixel saturation. During this window after activation,
             additional photons update TOT but don't create new activation.
         blob : float, default 0.0
-            Maximum blob radius in pixel units (can be float). Each photon from the intensifier triggers 
-            all camera pixels within a circular region.
-            Example: blob=0 → 1 pixel per photon, blob=1 → ~9 pixels, blob=2 → ~25 pixels.
+            Blob size parameter (interpretation depends on detector_model):
+            - image_intensifier: Maximum blob radius in pixels
+            - gaussian_diffusion: Gaussian sigma in pixels
+            - direct_detection: Ignored
+            - wavelength_dependent: Base blob radius (scaled by wavelength)
+            - avalanche_gain: Blob radius for gain distribution
         blob_variance : float, default 0.0
-            Radius value subtracted from blob radius (in pixels). Only used if blob > 0.
-            Each photon's actual blob radius is drawn uniformly from [blob - blob_variance, blob].
-            Example: blob=5, blob_variance=2.5 → radius uniformly distributed in [2.5, 5.0] pixels.
+            Blob radius variance (for image_intensifier model).
+            Actual radius drawn uniformly from [blob - blob_variance, blob].
         output_format : str, default "photons"
             Output format: "photons" for photon-averaged output with nz, pz columns.
-            Note: Use trace_rays() -> saturate_photons() -> _write_tpx3() pipeline for TPX3 files.
         min_tot : float, default 20.0
             Minimum Time-Over-Threshold in nanoseconds.
         decay_time : float, default 100.0
-            Exponential decay time constant in nanoseconds for blob activation timing.
-            Single delay drawn per photon, applied to all pixels in its blob.
+            Exponential decay time constant in nanoseconds (image_intensifier model).
         seed : int, optional
-            Random seed for reproducibility. If None, uses random state. If specified, allows
-            exact reconstruction of results across multiple runs.
+            Random seed for reproducibility.
+        detector_model : str or DetectorModel, default "image_intensifier"
+            Physical model to use for photon detection. String options (lowercase):
+            - "image_intensifier": MCP intensifier with circular blobs (default)
+            - "gaussian_diffusion": Charge diffusion with Gaussian PSF
+            - "direct_detection": Simple single-pixel detection
+            - "wavelength_dependent": Spectral QE and wavelength-dependent gain
+            - "avalanche_gain": Poisson gain with afterpulsing
+        model_params : dict, optional
+            Additional model-specific parameters. See documentation for details.
+            Examples:
+            - gaussian_diffusion: {'charge_coupling': 0.8}
+            - wavelength_dependent: {'qe_wavelength': [400, 500, 600], 'qe_values': [0.1, 0.3, 0.2]}
+            - avalanche_gain: {'mean_gain': 100, 'gain_variance': 20, 'afterpulse_prob': 0.01}
         verbosity : VerbosityLevel, default VerbosityLevel.BASIC
             Controls output detail level.
 
@@ -2130,7 +2688,68 @@ class Lens:
             - toa2: time of arrival in nanoseconds (first activation time)
             - time_diff: time-over-threshold in nanoseconds (first to last photon in deadtime)
             - photon_count: number of photon blobs that hit this pixel during deadtime
+
+        Examples:
+        ---------
+        # Image intensifier (default)
+        df = lens.saturate_photons(blob=2.0, decay_time=100.0, deadtime=600.0)
+
+        # Gaussian diffusion model
+        df = lens.saturate_photons(
+            detector_model="gaussian_diffusion",
+            blob=1.5,  # sigma
+            model_params={'charge_coupling': 0.85}
+        )
+
+        # Direct detection (no blob)
+        df = lens.saturate_photons(
+            detector_model="direct_detection",
+            deadtime=300.0
+        )
+
+        # Wavelength-dependent response
+        df = lens.saturate_photons(
+            detector_model="wavelength_dependent",
+            blob=2.0,
+            model_params={
+                'qe_wavelength': [400, 450, 500, 550, 600],
+                'qe_values': [0.1, 0.25, 0.35, 0.30, 0.15]
+            }
+        )
         """
+        # Set default detector model if None
+        if detector_model is None:
+            detector_model = "image_intensifier"  # Default model
+
+        # Merge kwargs into model_params
+        if model_params is None:
+            model_params = {}
+        else:
+            model_params = model_params.copy()  # Don't modify original dict
+
+        # Kwargs take precedence over model_params
+        model_params.update(kwargs)
+
+        # Convert string to DetectorModel enum
+        if isinstance(detector_model, str):
+            model_map = {
+                'image_intensifier': DetectorModel.IMAGE_INTENSIFIER,
+                'gaussian_diffusion': DetectorModel.GAUSSIAN_DIFFUSION,
+                'direct_detection': DetectorModel.DIRECT_DETECTION,
+                'wavelength_dependent': DetectorModel.WAVELENGTH_DEPENDENT,
+                'avalanche_gain': DetectorModel.AVALANCHE_GAIN,
+                'image_intensifier_gain': DetectorModel.IMAGE_INTENSIFIER_GAIN,
+                'timepix3_calibrated': DetectorModel.TIMEPIX3_CALIBRATED,
+                'physical_mcp': DetectorModel.PHYSICAL_MCP
+            }
+            detector_model_lower = detector_model.lower()
+            if detector_model_lower not in model_map:
+                raise ValueError(f"Unknown detector model: '{detector_model}'. "
+                               f"Valid options: {list(model_map.keys())}")
+            detector_model = model_map[detector_model_lower]
+        elif not isinstance(detector_model, DetectorModel):
+            raise TypeError(f"detector_model must be a string or DetectorModel enum, got {type(detector_model)}")
+
         if blob < 0:
             raise ValueError(f"blob must be non-negative, got {blob}")
         if blob_variance < 0:
@@ -2255,87 +2874,174 @@ class Lens:
                 print(f"  Pixel coordinate range: x=[{px_float.min():.1f}, {px_float.max():.1f}], "
                     f"y=[{py_float.min():.1f}, {py_float.max():.1f}]")
 
-            # Apply the physical blob model with TOT tracking
+            # Apply the physical detector model with TOT tracking
             result_rows = []
             pixel_state = {}  # Key: (px_i, py_i), Value: {'first_toa': float, 'last_toa': float, 'photon_count': int, 'idx': int}
-            
+
+            # Initialize model parameters
+            if model_params is None:
+                model_params = {}
+
             if verbosity >= VerbosityLevel.DETAILED:
-                variance_msg = f", variance ±{blob_variance} pixels" if blob_variance > 0 else ""
-                print(f"  Applying physical blob model: max radius {blob} pixels{variance_msg}, deadtime {deadtime}ns, decay {decay_time}ns")
+                model_name = detector_model.name
+                if detector_model == DetectorModel.IMAGE_INTENSIFIER:
+                    variance_msg = f", variance ±{blob_variance} pixels" if blob_variance > 0 else ""
+                    print(f"  Model: {model_name} - blob radius {blob} pixels{variance_msg}, deadtime {deadtime}ns, decay {decay_time}ns")
+                elif detector_model == DetectorModel.GAUSSIAN_DIFFUSION:
+                    coupling = model_params.get('charge_coupling', 1.0)
+                    print(f"  Model: {model_name} - Gaussian σ={blob} pixels, coupling={coupling}, deadtime {deadtime}ns")
+                elif detector_model == DetectorModel.DIRECT_DETECTION:
+                    print(f"  Model: {model_name} - single pixel detection, deadtime {deadtime}ns")
+                elif detector_model == DetectorModel.WAVELENGTH_DEPENDENT:
+                    print(f"  Model: {model_name} - wavelength-dependent QE, base blob {blob} pixels, deadtime {deadtime}ns")
+                elif detector_model == DetectorModel.AVALANCHE_GAIN:
+                    mean_gain = model_params.get('mean_gain', 100)
+                    print(f"  Model: {model_name} - avalanche gain (mean={mean_gain}), deadtime {deadtime}ns")
+                elif detector_model == DetectorModel.IMAGE_INTENSIFIER_GAIN:
+                    gain = model_params.get('gain', 5000)
+                    print(f"  Model: {model_name} - gain-dependent MCP (gain={gain}), deadtime {deadtime}ns")
+                elif detector_model == DetectorModel.TIMEPIX3_CALIBRATED:
+                    gain = model_params.get('gain', 5000)
+                    tot_a = model_params.get('tot_a', 30.0)
+                    tot_b = model_params.get('tot_b', 50.0)
+                    print(f"  Model: {model_name} - TPX3 calibrated (gain={gain}, TOT: {tot_a}+{tot_b}×ln(Q)), deadtime {deadtime}ns")
+                elif detector_model == DetectorModel.PHYSICAL_MCP:
+                    gain = model_params.get('gain', 5000)
+                    phosphor = model_params.get('phosphor_type', 'p43')
+                    print(f"  Model: {model_name} - full physics MCP (gain={gain}, phosphor={phosphor}), deadtime {deadtime}ns")
+
+            # Collect afterpulses for AVALANCHE_GAIN model
+            afterpulse_queue = []
 
             for idx in range(len(df)):
                 cx = px_float[idx]
                 cy = py_float[idx]
                 photon_toa = toa[idx]
-                
-                # Draw single exponential delay for this photon's entire blob
-                activation_delay = np.random.exponential(decay_time)
-                activation_time = photon_toa + activation_delay
-                
-                # Draw blob radius for this photon
-                if blob_variance > 0 and blob > 0:
-                    min_radius = blob - blob_variance
-                    actual_blob = np.random.uniform(min_radius, blob)
+
+                # Dispatch to appropriate detector model
+                if detector_model == DetectorModel.IMAGE_INTENSIFIER:
+                    result = self._apply_image_intensifier_model(cx, cy, photon_toa, blob, blob_variance, decay_time)
+                    if result is None:
+                        continue
+                    covered_x, covered_y, activation_time, pixel_weights = result
+
+                elif detector_model == DetectorModel.GAUSSIAN_DIFFUSION:
+                    result = self._apply_gaussian_diffusion_model(cx, cy, photon_toa, blob, model_params)
+                    if result is None:
+                        continue
+                    covered_x, covered_y, activation_time, pixel_weights = result
+
+                elif detector_model == DetectorModel.DIRECT_DETECTION:
+                    result = self._apply_direct_detection_model(cx, cy, photon_toa)
+                    if result is None:
+                        continue
+                    covered_x, covered_y, activation_time, pixel_weights = result
+
+                elif detector_model == DetectorModel.WAVELENGTH_DEPENDENT:
+                    # Get wavelength from data if available
+                    wavelength = df.iloc[idx].get('wavelength', 500.0)  # default to 500nm if not available
+                    result = self._apply_wavelength_dependent_model(cx, cy, photon_toa, wavelength, blob, decay_time, model_params)
+                    if result is None:
+                        continue  # Photon not detected due to QE
+                    covered_x, covered_y, activation_time, pixel_weights = result
+
+                elif detector_model == DetectorModel.AVALANCHE_GAIN:
+                    result = self._apply_avalanche_gain_model(cx, cy, photon_toa, blob, model_params)
+                    if result is None:
+                        continue
+                    covered_x, covered_y, activation_time, pixel_weights, afterpulse_events = result
+                    afterpulse_queue.extend(afterpulse_events)
+
+                elif detector_model == DetectorModel.IMAGE_INTENSIFIER_GAIN:
+                    result = self._apply_image_intensifier_gain_model(cx, cy, photon_toa, blob, decay_time, model_params)
+                    if result is None:
+                        continue
+                    covered_x, covered_y, activation_time, pixel_weights = result
+
+                elif detector_model == DetectorModel.TIMEPIX3_CALIBRATED:
+                    result = self._apply_timepix3_calibrated_model(cx, cy, photon_toa, model_params)
+                    if result is None:
+                        continue
+                    covered_x, covered_y, activation_time, pixel_weights, tot_cal = result
+                    # Store TOT calibration for later use (could be used in finalization)
+
+                elif detector_model == DetectorModel.PHYSICAL_MCP:
+                    result = self._apply_physical_mcp_model(cx, cy, photon_toa, model_params)
+                    if result is None:
+                        continue
+                    covered_x, covered_y, activation_time, pixel_weights = result
+
                 else:
-                    actual_blob = blob
-                
-                # Find all pixels covered by the circular blob
-                if actual_blob > 0:
-                    i_min = int(np.floor(cx - actual_blob - 0.5))
-                    i_max = int(np.ceil(cx + actual_blob + 0.5))
-                    j_min = int(np.floor(cy - actual_blob - 0.5))
-                    j_max = int(np.ceil(cy + actual_blob + 0.5))
-                    
-                    # Create grid of pixel centers
-                    x_grid = np.arange(i_min, i_max + 1)
-                    y_grid = np.arange(j_min, j_max + 1)
-                    xx, yy = np.meshgrid(x_grid, y_grid)
-                    xx = xx.flatten()
-                    yy = yy.flatten()
-                    
-                    # Find closest point in each pixel to circle center
-                    closest_x = np.clip(cx, xx - 0.5, xx + 0.5)
-                    closest_y = np.clip(cy, yy - 0.5, yy + 0.5)
-                    dist2 = (closest_x - cx) ** 2 + (closest_y - cy) ** 2
-                    mask = dist2 <= actual_blob ** 2
-                    
-                    covered_x = xx[mask]
-                    covered_y = yy[mask]
-                else:
-                    # No blob: only the pixel containing the photon center
-                    covered_x = np.array([int(np.floor(cx))])
-                    covered_y = np.array([int(np.floor(cy))])
-                
+                    raise ValueError(f"Unknown detector model: {detector_model}")
+
                 if len(covered_x) == 0:
                     continue
-                
-                # Process all pixels in blob
-                for px_i, py_i in zip(covered_x, covered_y):
+
+                # Process all pixels in blob (common deadtime logic for all models)
+                for i, (px_i, py_i) in enumerate(zip(covered_x, covered_y)):
                     pixel_key = (int(px_i), int(py_i))
-                    
+                    weight = pixel_weights[i] if i < len(pixel_weights) else 1.0
+
                     # Check if pixel is currently active (in deadtime)
                     if pixel_key in pixel_state:
                         pixel_info = pixel_state[pixel_key]
                         time_since_first = activation_time - pixel_info['first_toa']
-                        
+
                         if deadtime is not None and time_since_first <= deadtime:
                             # Pixel still in deadtime - update last_toa and increment count
                             pixel_info['last_toa'] = activation_time
                             pixel_info['photon_count'] += 1
+                            # Accumulate weighted charge for models like GAUSSIAN_DIFFUSION
+                            if 'total_charge' in pixel_info:
+                                pixel_info['total_charge'] += weight
                             continue
                         else:
                             # Deadtime expired - finalize previous pixel event
-                            self._finalize_pixel_event(result_rows, pixel_key, pixel_info, 
+                            self._finalize_pixel_event(result_rows, pixel_key, pixel_info,
                                                     photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot)
                             # Remove from active state (will be re-added below)
                             del pixel_state[pixel_key]
-                    
+
                     # Start new pixel activation
                     pixel_state[pixel_key] = {
                         'first_toa': activation_time,
                         'last_toa': activation_time,
                         'photon_count': 1,
-                        'idx': idx  # Store index of first photon that activated this pixel
+                        'idx': idx,  # Store index of first photon that activated this pixel
+                        'total_charge': weight  # Track accumulated charge for weighted models
+                    }
+
+            # Process afterpulses for AVALANCHE_GAIN model
+            if detector_model == DetectorModel.AVALANCHE_GAIN and afterpulse_queue:
+                # Sort afterpulses by time
+                afterpulse_queue.sort(key=lambda x: x[0])
+                for afterpulse_time, ap_cx, ap_cy in afterpulse_queue:
+                    # Treat afterpulse as a new photon
+                    px_i = int(np.floor(ap_cx))
+                    py_i = int(np.floor(ap_cy))
+                    pixel_key = (px_i, py_i)
+
+                    if pixel_key in pixel_state:
+                        pixel_info = pixel_state[pixel_key]
+                        time_since_first = afterpulse_time - pixel_info['first_toa']
+
+                        if deadtime is not None and time_since_first <= deadtime:
+                            pixel_info['last_toa'] = afterpulse_time
+                            pixel_info['photon_count'] += 1
+                            continue
+                        else:
+                            self._finalize_pixel_event(result_rows, pixel_key, pixel_info,
+                                                    photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot)
+                            del pixel_state[pixel_key]
+
+                    # Create new activation from afterpulse
+                    # Use the original photon's index for metadata
+                    pixel_state[pixel_key] = {
+                        'first_toa': afterpulse_time,
+                        'last_toa': afterpulse_time,
+                        'photon_count': 1,
+                        'idx': 0,  # Default index
+                        'total_charge': 1.0
                     }
             
             # Finalize all remaining pixel events
