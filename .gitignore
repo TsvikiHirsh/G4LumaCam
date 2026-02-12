@@ -39,3 +39,9 @@ notebooks/demo_models
 test_groupby/
 test_detector_groupby.py
 notebooks/detector_models_comparison.ipynb
+
+# pixi data
+pixi.lock
+
+# scratch spaces
+.scratch/

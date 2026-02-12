@@ -474,8 +474,35 @@ class Simulate:
         self.sim_dir = self.archive / "SimPhotons"
         self.sim_dir.mkdir(exist_ok=True, parents=True)
 
-        with resources.path('G4LumaCam', 'bin') as bin_path:
-            self.lumacam_executable = os.path.join(bin_path, "lumacam")
+        self.lumacam_executable = self._find_lumacam_executable()
+
+    def _find_lumacam_executable(self) -> str:
+        """Resolve the lumacam executable path with sensible fallbacks.
+
+        Priority:
+        1) LUMACAM_EXECUTABLE env var (explicit override)
+        2) Local build output: <repo>/build/lumacam
+        3) Installed package resource: G4LumaCam/bin/lumacam
+        """
+        env_path = os.environ.get("LUMACAM_EXECUTABLE")
+        if env_path and os.path.exists(env_path):
+            return env_path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        build_candidate = repo_root / "build" / "lumacam"
+        if build_candidate.exists():
+            return str(build_candidate)
+
+        try:
+            pkg_bin = resources.files("G4LumaCam") / "bin" / "lumacam"
+            if pkg_bin.exists():
+                return str(pkg_bin)
+        except Exception:
+            pass
+
+        raise FileNotFoundError(
+            f"lumacam executable not found. Tried env LUMACAM_EXECUTABLE, {build_candidate}, and package bin."
+        )
 
     def _process_output(self, process, output_queue, verbosity):
         """Process the output from the simulation in real-time."""

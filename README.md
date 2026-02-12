@@ -86,6 +86,21 @@ EMPIR is a proprietary reconstruction code for Timepix-3 detector data, availabl
    pip install .
    ```
 
+### Pixi environment (conda-forge Geant4)
+
+The repo ships a `pixi.toml` that provisions Geant4 10.6 with OpenGL/Qt, data sets, and a build task.
+
+```bash
+pixi install                      # create/solve env; Geant4 data env vars are set via pixi run/shell
+pixi run build-sim                # configure, build, and copy build/lumacam to src/G4LumaCam/bin
+./build/lumacam                   # run the C++ binary inside the pixi env (e.g. after `pixi shell`)
+```
+
+Notes:
+- The pixi activation sets the Geant4 data variables (G4ENSDFSTATEDATA, G4NEUTRONHPDATA, etc.) to the copies in `.pixi/envs/default/share/Geant4/data`.
+- The build task also places the executable at `src/G4LumaCam/bin/lumacam` so the Python wrapper `lumacam.Simulate` can find it.
+- For headless runs, the default viewer in code uses file-based drivers; you can switch to OGL when a GLX-capable display is available.
+
 ## Simulation Output & Reconstruction with EMPIR
 
 G4LumaCam generates standard **TPX3 files** from the simulation, which are compatible with various Timepix-3 reconstruction tools.
@@ -94,35 +109,26 @@ The `lumacam.Analysis` class provides seamless integration with EMPIR for the co
 
 ## EMPIR Configuration
 
-G4LumaCam automatically discovers EMPIR binaries within the specified directory,
-searching the root as well as common subdirectories (`bin/`, `empir_export/`).
+G4LumaCam offers three methods to specify the EMPIR executable path:
 
-### 1. Environment Variable (Recommended)
-Set `EMPIR_PATH` once in your shell profile or conda/micromamba environment:
+### 1. Environment Variable (Global Configuration)
+Set before installation for system-wide configuration:
 ```bash
-# Shell profile (~/.bashrc, ~/.zshrc)
-export EMPIR_PATH=/path/to/empir
-
-# Or persist in a conda/micromamba environment
-micromamba env config vars set EMPIR_PATH=/path/to/empir -n base
-```
-
-In a Jupyter notebook:
-```python
-%env EMPIR_PATH /path/to/empir
+export EMPIR_PATH=/path/to/empir/executables
+pip install .
 ```
 
 ### 2. Runtime Parameter (Per-Session)
-Pass explicitly when creating an Analysis or Lens object:
+Specify when creating an Analysis object:
 ```python
 analysis = lumacam.Analysis(
     archive="your_archive",
-    empir_dirpath="/path/to/empir"
+    empir_dirpath="/path/to/empir/executables"
 )
 ```
 
 ### 3. Default Path (Fallback)
-If neither is set, G4LumaCam falls back to `./empir` relative to the working directory.
+If unspecified, G4LumaCam searches for EMPIR in `./empir` relative to your working directory.
 
 ## Documentation
 

@@ -1,0 +1,68 @@
+[workspace]
+name = "G4LumaCam"
+version = "0.5.0"
+channels = ["conda-forge"]
+# This project currently targets 64-bit Linux.
+platforms = ["linux-64"]
+
+[dependencies]
+python = "3.11.*"
+pip = "*"
+cmake = "*"
+make = "*"
+cxx-compiler = "*"
+sysroot_linux-64 = "*"
+geant4 = "10.6.*"
+qt = "5.12.*"
+xorg-libx11 = "*"
+xorg-libxext = "*"
+xorg-libxmu = "*"
+xorg-libxrandr = "*"
+freeglut = "*"
+numpy = "<2"
+pandas = "*"
+scikit-learn = "*"
+lmfit = "*"
+matplotlib-base = "3.8.*"
+tifffile = "*"
+roifile = "*"
+tqdm = "*"
+pytest = "*"
+jupyterlab = "*"
+ipykernel = "*"
+
+[pypi-dependencies]
+rayoptics = "*"
+
+[activation.env]
+# EMPIR executables and exports; detect_empir.py will override if it finds better paths
+EMPIR_PATH = "/opt/empir/v1.0.0/bin"
+EMPIR_EXPORT_PATH = "/opt/empir/v1.0.0/empir_export"
+PATH = "${EMPIR_EXPORT_PATH}:${EMPIR_PATH}:${PATH}"
+
+# Simulation executable location for the Python wrapper
+LUMACAM_EXECUTABLE = "${CONDA_PREFIX}/bin/lumacam"
+
+# Geant4 data libraries (matching conda-forge Geant4 10.6 datasets)
+G4ABLADATA = "${CONDA_PREFIX}/share/Geant4/data/ABLA3.1"
+G4ENSDFSTATEDATA = "${CONDA_PREFIX}/share/Geant4/data/ENSDFSTATE2.2"
+G4LEDATA = "${CONDA_PREFIX}/share/Geant4/data/EMLOW7.9.1"
+G4LEVELGAMMADATA = "${CONDA_PREFIX}/share/Geant4/data/PhotonEvaporation5.5"
+G4NEUTRONHPDATA = "${CONDA_PREFIX}/share/Geant4/data/NDL4.6"
+G4PARTICLEXSDATA = "${CONDA_PREFIX}/share/Geant4/data/PARTICLEXS2.1"
+G4PIIDATA = "${CONDA_PREFIX}/share/Geant4/data/PII1.3"
+G4RADIOACTIVEDATA = "${CONDA_PREFIX}/share/Geant4/data/RadioactiveDecay5.4"
+G4REALSURFACEDATA = "${CONDA_PREFIX}/share/Geant4/data/RealSurface2.1.1"
+G4SAIDXSDATA = "${CONDA_PREFIX}/share/Geant4/data/SAIDDATA2.0"
+G4INCLDATA = "${CONDA_PREFIX}/share/Geant4/data/INCL1.0"
+
+[activation]
+# Run EMPIR detector to set EMPIR_PATH/EMPIR_EXPORT_PATH if present
+scripts = ["./scripts/detect_empir.sh"]
+
+[tasks]
+install = "python -m pip install -e ."
+test = "pytest"
+build-sim = "bash scripts/build_simulation.sh"
+clean-sim = "test ! -d build || cmake --build build --target clean"
+detect-empir = "bash scripts/detect_empir.sh"
