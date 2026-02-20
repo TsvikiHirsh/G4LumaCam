@@ -39,3 +39,4 @@ notebooks/demo_models
 test_groupby/
 test_detector_groupby.py
 notebooks/detector_models_comparison.ipynb
+notebooks/optML_run
