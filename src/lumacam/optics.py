@@ -11,7 +11,7 @@ from typing import Union, List, Tuple, Optional
 from pathlib import Path
 from multiprocessing import Pool
 from functools import partial   
-from tqdm.notebook import tqdm
+from tqdm.auto import tqdm
 import numpy as np
 import pandas as pd
 from rayoptics.raytr import analyses

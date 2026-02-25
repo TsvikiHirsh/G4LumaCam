@@ -1,7 +1,7 @@
 import os
 import subprocess
 from pathlib import Path
-from tqdm.notebook import tqdm
+from tqdm.auto import tqdm
 from enum import IntEnum
 from dataclasses import dataclass
 import json
