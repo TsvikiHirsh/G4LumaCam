@@ -2168,10 +2168,6 @@ class Lens:
             - activation_time: time when pixels are activated
             - pixel_weights: array of weights (all 1.0 for this model)
         """
-        # Draw single exponential delay for this photon's entire blob
-        activation_delay = np.random.exponential(decay_time)
-        activation_time = photon_toa + activation_delay
-
         # Draw blob radius for this photon
         if blob_variance > 0 and blob > 0:
             min_radius = blob - blob_variance
@@ -2209,7 +2205,11 @@ class Lens:
         # All pixels have equal weight
         pixel_weights = np.ones(len(covered_x))
 
-        return covered_x, covered_y, activation_time, pixel_weights
+        # Each pixel in the blob is activated by an independent secondary photon
+        # emitted by the phosphor at a random time ~ Exp(decay_time).
+        activation_times = photon_toa + np.random.exponential(decay_time, size=len(covered_x))
+
+        return covered_x, covered_y, activation_times, pixel_weights
 
     def _apply_gaussian_diffusion_model(self, cx, cy, photon_toa, sigma, model_params):
         """
@@ -2429,10 +2429,6 @@ class Lens:
         if blob > 0:
             sigma_pixels = blob
 
-        # Draw exponential delay for phosphor emission
-        activation_delay = np.random.exponential(decay_time)
-        activation_time = photon_toa + activation_delay
-
         # Sample pixels within 3σ (covers 99.7% of photons)
         if sigma_pixels > 0:
             search_radius = 3.0 * sigma_pixels
@@ -2470,7 +2466,11 @@ class Lens:
             covered_y = np.array([int(np.floor(cy))])
             pixel_weights = np.ones(1)
 
-        return covered_x, covered_y, activation_time, pixel_weights
+        # Each pixel is activated by an independent secondary photon from the phosphor.
+        # The Gaussian weight controls spatial probability; timing is independent ~ Exp(decay_time).
+        activation_times = photon_toa + np.random.exponential(decay_time, size=len(covered_x))
+
+        return covered_x, covered_y, activation_times, pixel_weights
 
     def _apply_timepix3_calibrated_model(self, cx, cy, photon_toa, model_params):
         """
@@ -2999,19 +2999,24 @@ class Lens:
                 if len(covered_x) == 0:
                     continue
 
+                # activation_time may be a scalar (most models) or a per-pixel array
+                # (image_intensifier / image_intensifier_gain with per-pixel phosphor timing).
+                _act_is_array = hasattr(activation_time, '__len__')
+
                 # Process all pixels in blob (common deadtime logic for all models)
                 for i, (px_i, py_i) in enumerate(zip(covered_x, covered_y)):
                     pixel_key = (int(px_i), int(py_i))
                     weight = pixel_weights[i] if i < len(pixel_weights) else 1.0
+                    act_t = activation_time[i] if _act_is_array else activation_time
 
                     # Check if pixel is currently active (in deadtime)
                     if pixel_key in pixel_state:
                         pixel_info = pixel_state[pixel_key]
-                        time_since_first = activation_time - pixel_info['first_toa']
+                        time_since_first = act_t - pixel_info['first_toa']
 
                         if deadtime is not None and time_since_first <= deadtime:
                             # Pixel still in deadtime - update last_toa and increment count
-                            pixel_info['last_toa'] = activation_time
+                            pixel_info['last_toa'] = act_t
                             pixel_info['photon_count'] += 1
                             # Accumulate weighted charge for models like GAUSSIAN_DIFFUSION
                             if 'total_charge' in pixel_info:
@@ -3027,8 +3032,8 @@ class Lens:
 
                     # Start new pixel activation
                     pixel_state[pixel_key] = {
-                        'first_toa': activation_time,
-                        'last_toa': activation_time,
+                        'first_toa': act_t,
+                        'last_toa': act_t,
                         'photon_count': 1,
                         'idx': idx,  # Store index of first photon that activated this pixel
                         'total_charge': weight  # Track accumulated charge for weighted models
