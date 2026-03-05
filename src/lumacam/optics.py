@@ -1617,9 +1617,9 @@ class Lens:
         TICK_NS = 1.5625  # ToA tick size (1.5625 ns)
         TOT_TICK_NS = 25.0  # ToT tick size (25 ns per TPX3 spec)
         MAX_TDC_TIMESTAMP_S = (2**32) * 25e-9  # ~107.37 seconds
-        MAX_CHUNK_BYTES = 65535
-        TIMER_TICK_NS = 409.6  # GTS timer tick
         PACKET_SIZE = 8
+        MAX_CHUNK_BYTES = 65535 - PACKET_SIZE  # reserve 8 bytes for carry-over TDC packet
+        TIMER_TICK_NS = 409.6  # GTS timer tick
         
         def encode_gts_pair(timer_value):
             """Encode Global Timestamp (GTS) packet pair."""
@@ -1895,7 +1895,9 @@ class Lens:
                     })
                     
                     current_start = start
-                    current_size = 16 + n_size
+                    # Recompute size for the new group from scratch:
+                    # all of this neutron's pulse_ids are "new" to the new group.
+                    current_size = 16 + (end - start) * PACKET_SIZE + len(n_pulses) * 8
                     current_triggers = n_pulses.copy()
                 else:
                     current_size += n_size
@@ -1930,6 +1932,13 @@ class Lens:
         
         # Write files
         files_written = []
+        # Build a globally sorted list of all triggers so each part file can
+        # prepend the last trigger that fired before its first pixel, regardless
+        # of whether the parts are in strict time order.
+        sorted_global_triggers = sorted(
+            [(t, int(pid)) for pid, t in trigger_time_dict.items() if t is not None],
+            key=lambda x: x[0]
+        )
         for file_idx, group in enumerate(file_groups):
             start_idx = group['start_idx']
             end_idx = group['end_idx']
@@ -1962,19 +1971,33 @@ class Lens:
                         print(f"  File {file_idx + 1}: TDC @ {trigger_ns:.1f}ns, first hit @ {first_toa:.1f}ns (Δt={dt:.1f}ns)")
             else:
                 triggers = group.get('trigger_times', {})
-                
-                for pulse_id, trigger_ns in sorted(triggers.items()):
+
+                # Find the last global trigger that fired before this part's
+                # first pixel. Writing it as the very first packet ensures EMPIR
+                # always has a valid TDC baseline, even when part files are not
+                # strictly in pulse-time order (e.g. sorted by neutron_id).
+                first_toa = toa_ns[start_idx]
+                preceding = [(t, pid) for t, pid in sorted_global_triggers if t <= first_toa]
+                if preceding:
+                    pre_t, pre_pid = preceding[-1]
+                    content += encode_tdc_packet(pre_t, pre_pid, 1, 'rising')
+
+                # Interleave this part's own TDC triggers with pixel packets in
+                # chronological order so EMPIR updates its TDC before each pulse.
+                timed_packets = []
+                for pulse_id, trigger_ns in triggers.items():
                     if trigger_ns is not None:
-                        tdc_packet = encode_tdc_packet(trigger_ns, pulse_id, 1, 'rising')
-                        content += tdc_packet
+                        tdc_pkt = encode_tdc_packet(trigger_ns, pulse_id, 1, 'rising')
+                        timed_packets.append((trigger_ns, tdc_pkt))
                         n_triggers += 1
-                
+                for j in range(start_idx, end_idx):
+                    timed_packets.append((toa_ns[j], pixel_packets[j]))
+                timed_packets.sort(key=lambda x: x[0])
+                for _, pkt in timed_packets:
+                    content += pkt
+
                 if verbosity >= 2 and n_triggers > 0:
                     print(f"  File {file_idx + 1}: {n_triggers} TDC trigger(s)")
-            
-            # Add pixel packets
-            for j in range(start_idx, end_idx):
-                content += pixel_packets[j]
             
             # Determine filename
             neutron_id = group.get('neutron_id')
