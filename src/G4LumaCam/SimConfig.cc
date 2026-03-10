@@ -15,6 +15,7 @@ namespace Sim {
     G4double SCINT_SIZE = 12.0 * cm;
     G4double SAMPLE_WIDTH = 12.0 * cm; // Full width
     G4double COATING_THICKNESS = 0.01 * cm;
+    G4double SAMPLE_DISTANCE = 0.0 * cm; // Default: sample face touches scintillator coating
     G4double TMIN = 0.0 * ns;
     G4double TMAX = 0.0 * ns;
     G4double FLUX = 0.0; // Default: no pulsed structure
@@ -46,6 +47,15 @@ namespace Sim {
             G4cout << "Sample width set to: " << width / cm << " cm" << G4endl;
         } else {
             G4cerr << "ERROR: Sample width must be positive!" << G4endl;
+        }
+    }
+
+    void SetSampleDistance(G4double distance) {
+        if (distance >= 0) {
+            SAMPLE_DISTANCE = distance;
+            G4cout << "Sample distance set to: " << distance / cm << " cm" << G4endl;
+        } else {
+            G4cerr << "ERROR: Sample distance must be non-negative!" << G4endl;
         }
     }
 
