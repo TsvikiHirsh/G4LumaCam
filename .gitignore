@@ -41,3 +41,4 @@ test_detector_groupby.py
 notebooks/detector_models_comparison.ipynb
 notebooks/optML_run
 notebooks/logistic_opt_run
+notebooks/openbeam_ptb.ipynb
