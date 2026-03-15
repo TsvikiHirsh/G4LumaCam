@@ -3202,12 +3202,19 @@ class Lens:
             tot_measured = base_tot + tail_time
 
         elif detector_model == DetectorModel.IMAGE_INTENSIFIER_GAIN:
-            # MCP + phosphor: exponential decay
-            # Higher gain -> potentially longer tail
+            # TOT is proportional to the charge collected at this pixel.
+            # Charge = gain × Gaussian_weight (total_charge) from the phosphor blob.
+            # Timepix3 pixel discharges at constant rate I_krum, so:
+            #   TOT ≈ gain × total_charge × tot_per_charge
+            # tot_per_charge [ns / (gain-unit × weight)] is the calibration
+            # knob: increase it to shift the whole distribution to higher TOT.
             gain = model_params.get('gain', 5000)
-            gain_factor = np.clip(np.log10(gain / 1000), 0.5, 2.0)
-            tail_time = np.random.exponential(decay_time * 0.7 * gain_factor)
-            tot_measured = base_tot + tail_time
+            total_charge = model_params.get('total_charge', 1.0)
+            tot_per_charge = model_params.get('tot_per_charge', 0.3)
+            charge_tot = gain * total_charge * tot_per_charge
+            # Small Gaussian noise (electronic noise + threshold jitter)
+            noise = np.random.normal(0, charge_tot * 0.05 + decay_time * 0.1)
+            tot_measured = base_tot + max(0.0, charge_tot + noise)
 
         elif detector_model == DetectorModel.TIMEPIX3_CALIBRATED:
             # Charge integration in Timepix3 sensor
@@ -3270,8 +3277,13 @@ class Lens:
         if model_params is None:
             model_params = {}
 
+        # Pass accumulated Gaussian weight to _calculate_tot so charge-based
+        # models can scale TOT correctly per pixel position within the blob.
+        local_params = dict(model_params)
+        local_params['total_charge'] = pixel_info.get('total_charge', 1.0)
+
         tot_measured = self._calculate_tot(first_toa, last_toa, photon_count, min_tot,
-                                           decay_time, detector_model, model_params)
+                                           decay_time, detector_model, local_params)
         
         result_rows.append({
             'pixel_x': px_i,
