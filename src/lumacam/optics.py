@@ -1269,8 +1269,8 @@ class Lens:
                             print(f"  Rows marked for TPX3: {tpx3_count}")
 
                     # Filter columns to keep for hits workflow
-                    desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'photon_count', 'time_diff', 
-                                    'id', 'neutron_id', 'pulse_id', 'pulse_time_ns', 'in_tpx3']
+                    desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'photon_count', 'time_diff',
+                                    'id', 'sim_id', 'neutron_id', 'pulse_id', 'pulse_time_ns', 'in_tpx3']
                     
                     columns_to_keep = [col for col in desired_columns if col in result_df.columns]
                     result_df = result_df[columns_to_keep]
@@ -1320,8 +1320,8 @@ class Lens:
                             print(f"  Warning: pulse_time_ns not available, setting tof=0")
                     
                     # Filter columns for photons workflow
-                    desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'tof', 
-                                    'id', 'neutron_id', 'pulse_id', 'pulse_time_ns']
+                    desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'tof',
+                                    'id', 'sim_id', 'neutron_id', 'pulse_id', 'pulse_time_ns']
                     
                     columns_to_keep = [col for col in desired_columns if col in result_df.columns]
                     result_df = result_df[columns_to_keep]
@@ -2149,6 +2149,12 @@ class Lens:
             for col in ['id', 'neutron_id', 'pulse_id', 'parent_id', 'nz', 'pz', 'pulse_time_ns']:
                 if col in original_df.columns:
                     row[col] = orig_row[col]
+
+            # sim_id: stable Geant4 track ID from SimPhotons for downstream joins
+            if 'sim_id' in original_df.columns:
+                row['sim_id'] = orig_row['sim_id']
+            elif 'id' in original_df.columns:
+                row['sim_id'] = orig_row['id']
             
             # Copy timing
             if 'toa' in original_df.columns:
@@ -2903,6 +2909,7 @@ class Lens:
             py_float = df['pixel_y'].to_numpy()
             toa = df['toa2'].to_numpy()
             photon_ids = df['id'].to_numpy()
+            sim_ids = df['sim_id'].to_numpy() if 'sim_id' in df.columns else photon_ids
             neutron_ids = df['neutron_id'].to_numpy()
             pulse_ids = df['pulse_id'].to_numpy()
             pulse_times = df['pulse_time_ns'].to_numpy()
@@ -3048,7 +3055,7 @@ class Lens:
                         else:
                             # Deadtime expired - finalize previous pixel event
                             self._finalize_pixel_event(result_rows, pixel_key, pixel_info,
-                                                    photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot,
+                                                    photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, sim_ids, min_tot,
                                                     decay_time, detector_model, model_params)
                             # Remove from active state (will be re-added below)
                             del pixel_state[pixel_key]
@@ -3082,7 +3089,7 @@ class Lens:
                             continue
                         else:
                             self._finalize_pixel_event(result_rows, pixel_key, pixel_info,
-                                                    photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot,
+                                                    photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, sim_ids, min_tot,
                                                     decay_time, detector_model, model_params)
                             del pixel_state[pixel_key]
 
@@ -3099,7 +3106,7 @@ class Lens:
             # Finalize all remaining pixel events
             for pixel_key, pixel_info in pixel_state.items():
                 self._finalize_pixel_event(result_rows, pixel_key, pixel_info,
-                                        photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot,
+                                        photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, sim_ids, min_tot,
                                         decay_time, detector_model, model_params)
 
             # Create result DataFrame
@@ -3253,7 +3260,7 @@ class Lens:
         return max(tot_measured, min_tot)
 
     def _finalize_pixel_event(self, result_rows, pixel_key, pixel_info,
-                            photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot,
+                            photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, sim_ids, min_tot,
                             decay_time=100.0, detector_model=None, model_params=None):
         """Helper function to finalize and add a pixel event to results.
 
@@ -3262,7 +3269,7 @@ class Lens:
         - toa2: time of arrival in nanoseconds (first photon)
         - time_diff: time-over-threshold in nanoseconds (includes decay tail)
         - photon_count: number of photon blobs that hit this pixel
-        - id, neutron_id, pulse_id, pulse_time_ns: from first photon
+        - id, sim_id, neutron_id, pulse_id, pulse_time_ns: from first photon
         - nz, pz: from first photon
         """
         px_i, py_i = pixel_key
@@ -3292,6 +3299,7 @@ class Lens:
             'photon_count': photon_count,
             'time_diff': tot_measured,
             'id': photon_ids[first_idx],
+            'sim_id': sim_ids[first_idx],
             'neutron_id': neutron_ids[first_idx],
             'pulse_id': pulse_ids[first_idx],
             'pulse_time_ns': pulse_times[first_idx],
