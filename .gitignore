@@ -41,3 +41,6 @@ test_detector_groupby.py
 notebooks/detector_models_comparison.ipynb
 notebooks/optML_run
 notebooks/logistic_opt_run
+notebooks/lumacam_optimize/
+notebooks/optimize*.ipynb
+notebooks/sim_opt/
