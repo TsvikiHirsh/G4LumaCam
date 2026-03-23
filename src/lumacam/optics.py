@@ -1262,7 +1262,27 @@ class Lens:
                         # Remove temporary index column
                         if '_original_index' in result_df.columns:
                             result_df = result_df.drop(columns=['_original_index'])
-                        
+
+                        # Mark out-of-bounds pixels as not written to TPX3.
+                        # _write_tpx3 silently drops pixels outside [0, 255]; TracedPhotons must agree
+                        # so that its row count matches ExportedPixels exactly.
+                        SENSOR_SIZE = 256
+                        if 'pixel_x' in result_df.columns and 'pixel_y' in result_df.columns:
+                            # saturate_photons may not carry in_tpx3 forward; all rows in saturated_df
+                            # are survivors so default to True before the OOB filter.
+                            if 'in_tpx3' not in result_df.columns:
+                                result_df['in_tpx3'] = True
+                            oob_mask = (
+                                result_df['pixel_x'].notna() & result_df['pixel_y'].notna() & (
+                                    (result_df['pixel_x'] < 0) | (result_df['pixel_x'] >= SENSOR_SIZE) |
+                                    (result_df['pixel_y'] < 0) | (result_df['pixel_y'] >= SENSOR_SIZE)
+                                )
+                            )
+                            if oob_mask.any():
+                                result_df.loc[oob_mask, 'in_tpx3'] = False
+                                if verbosity >= VerbosityLevel.DETAILED:
+                                    print(f"  Marked {int(oob_mask.sum())} out-of-bounds pixels as in_tpx3=False")
+
                         if verbosity >= VerbosityLevel.DETAILED:
                             print(f"  After saturation and sorting: {len(result_df)} rows")
                             tpx3_count = result_df['in_tpx3'].sum() if 'in_tpx3' in result_df.columns else len(result_df)
@@ -1878,7 +1898,8 @@ class Lens:
                 new_triggers = n_pulses - current_triggers
                 n_size += len(new_triggers) * 8
                 
-                if current_size + n_size > MAX_CHUNK_BYTES and start > current_start:
+                at_pulse_boundary = pulse_ids[start] != pulse_ids[start - 1]
+                if current_size + n_size > MAX_CHUNK_BYTES and start > current_start and at_pulse_boundary:
                     group_pulses = set(pulse_ids[current_start:start])
                     group_triggers = {
                         int(pid): trigger_time_dict.get(int(pid))
@@ -2010,10 +2031,28 @@ class Lens:
             
             # Write file
             with open(out_path, "wb") as fh:
-                file_size = len(content)
-                header = struct.pack("<4sBBH", b"TPX3", chip_index & 0xFF, 0, file_size & 0xFFFF)
-                fh.write(header)
-                fh.write(content)
+                # Write in chunks whose content fits in the 16-bit TPX3 size
+                # field (≤65535 bytes).  We reserve 8 bytes per chunk so we can
+                # prepend the last-seen TDC packet at the start of every chunk
+                # after the first.  Without this, EMPIR processes each chunk
+                # independently and loses TDC state at chunk boundaries, which
+                # assigns pixels to the wrong trigger (two-population ToF bug).
+                MAX_CHUNK_CONTENT = 65528  # 8191 × 8 bytes
+                TDC_HEADERS = {0x6A, 0x6B, 0x6E, 0x6F}
+                last_tdc: bytes = b""
+                offset = 0
+                while offset < len(content):
+                    prefix = last_tdc  # carry-over TDC (empty for first chunk)
+                    avail = MAX_CHUNK_CONTENT - len(prefix)
+                    chunk_body = content[offset:offset + avail]
+                    # Track the last TDC packet in this chunk for the next one
+                    for i in range(0, len(chunk_body) - 7, 8):
+                        if chunk_body[i + 7] in TDC_HEADERS:
+                            last_tdc = bytes(chunk_body[i:i + 8])
+                    chunk = prefix + chunk_body
+                    fh.write(struct.pack("<4sBBH", b"TPX3", chip_index & 0xFF, 0, len(chunk)))
+                    fh.write(chunk)
+                    offset += avail
             
             files_written.append((out_path, end_idx - start_idx, n_triggers))
             
