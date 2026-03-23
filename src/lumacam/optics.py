@@ -1288,10 +1288,24 @@ class Lens:
                             tpx3_count = result_df['in_tpx3'].sum() if 'in_tpx3' in result_df.columns else len(result_df)
                             print(f"  Rows marked for TPX3: {tpx3_count}")
 
+                    # --- Coarse-clock wrap flag ---------------------------------------------------
+                    # Mark pixels that will be written with a coarse_toa decremented by 1 (see
+                    # _write_tpx3).  Uses the same wrap condition: fine bin 15 (ftoa_raw == 0).
+                    # Only rows sent to _write_tpx3 (in_tpx3 == True) can be wrapped;
+                    # out-of-bounds rows keep False.
+                    _toa_ticks_all = np.round(
+                        result_df['toa2'].to_numpy().astype(float) / 1.5625
+                    ).astype(np.int64)
+                    result_df['coarse_clock_wrap'] = ((15 - (_toa_ticks_all & 0xF)) == 0)
+                    if 'in_tpx3' in result_df.columns:
+                        result_df.loc[~result_df['in_tpx3'].astype(bool), 'coarse_clock_wrap'] = False
+                    # ------------------------------------------------------------------------------
+
                     # Filter columns to keep for hits workflow
                     desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'photon_count', 'time_diff',
-                                    'id', 'sim_id', 'neutron_id', 'pulse_id', 'pulse_time_ns', 'in_tpx3']
-                    
+                                    'id', 'sim_id', 'neutron_id', 'pulse_id', 'pulse_time_ns',
+                                    'in_tpx3', 'coarse_clock_wrap']
+
                     columns_to_keep = [col for col in desired_columns if col in result_df.columns]
                     result_df = result_df[columns_to_keep]
                     
@@ -1789,7 +1803,21 @@ class Lens:
         coarse_toa = ((toa_ticks >> 4) & 0x3FFF).astype(np.int64)
         ftoa = (15 - (toa_ticks & 0xF)).astype(np.int64)
         ftoa = np.clip(ftoa, 0, 15)
-        
+
+        # --- Coarse-clock wraparound simulation -----------------------------------
+        # Pixels whose fine-time bin is 15 (ftoa_raw == 0) are at the very last
+        # fine slot of a coarse period.  In real TPX3 hardware the coarse counter
+        # may have already incremented when the pixel latches, giving coarse_toa
+        # one period too high.  Simulate this artefact so that downstream analysis
+        # can study and correct it.
+        #
+        # Mathematical result: EMPIR reconstructs  (C-1)*25 + (15-0)*1.5625
+        #                                         = true_toa - 25 ns  (exactly)
+        _wrap_mask = (ftoa == 0)          # same as (toa_ticks & 0xF) == 15
+        coarse_toa = coarse_toa.copy()    # avoid mutating the original array
+        coarse_toa[_wrap_mask] -= 1       # simulate hardware reading previous period
+        # -------------------------------------------------------------------------
+
         # Convert ToT to ticks (10-bit, 25ns resolution per TPX3 spec)
         tot_ticks = np.clip(np.round(tot_ns / TOT_TICK_NS).astype(np.int64), 1, 0x3FF)
         
