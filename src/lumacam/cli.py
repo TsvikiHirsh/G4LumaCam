@@ -43,7 +43,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # --- optics ---
     optics = p.add_argument_group("optics")
-    optics.add_argument("--zfine", type=float, default=12.75,
+    optics.add_argument("--zfine", type=float, default=12.7,
                         help="Lens fine-focus offset in mm.")
     optics.add_argument("--zscan", type=float, default=0.0,
                         help="Z-scan offset in mm.")
@@ -55,19 +55,21 @@ def _build_parser() -> argparse.ArgumentParser:
     det.add_argument("--source", choices=["hits", "photons"], default=None,
                      help="Workflow: 'hits' applies saturation + writes TPX3; "
                           "'photons' exports directly. Auto-detected if omitted.")
-    det.add_argument("--deadtime", type=float, default=None,
+    det.add_argument("--deadtime", type=float, default=600.0,
                      help="Pixel deadtime in ns.")
-    det.add_argument("--blob", type=float, default=0.0,
+    det.add_argument("--blob", type=float, default=1.0,
                      help="Blob radius in pixels.")
     det.add_argument("--blob-variance", type=float, default=0.0,
                      help="Blob radius variance.")
-    det.add_argument("--decay-time", type=float, default=100.0,
+    det.add_argument("--decay-time", type=float, default=30.0,
                      help="Scintillator decay time in ns.")
+    det.add_argument("--gain", type=float, default=10000.0,
+                     help="Detector gain.")
     det.add_argument("--detector-model", type=str, default="image_intensifier_gain",
                      help="Detector model name.")
     det.add_argument("--param", metavar="KEY=VALUE", action="append", default=[],
                      help="Extra model parameter (repeatable). "
-                          "Example: --param gain=720 --param noise=0.05")
+                          "Example: --param noise=0.05")
 
     # --- CCW simulation ---
     p.add_argument("--simulate-ccw", action="store_true", default=False,
@@ -104,8 +106,8 @@ def trace_rays_main():
     parser = _build_parser()
     args = parser.parse_args()
 
-    # Parse --param KEY=VALUE pairs into a dict
-    model_params = {}
+    # Parse --param KEY=VALUE pairs into a dict; seed with --gain default
+    model_params = {"gain": args.gain}
     for kv in args.param:
         if "=" not in kv:
             parser.error(f"--param must be in KEY=VALUE format, got: {kv!r}")
@@ -129,7 +131,7 @@ def trace_rays_main():
         blob_variance=args.blob_variance,
         decay_time=args.decay_time,
         detector_model=args.detector_model,
-        model_params=model_params if model_params else None,
+        model_params=model_params,
         simulate_ccw=args.simulate_ccw,
         split_method=args.split_method,
         suffix=args.suffix,

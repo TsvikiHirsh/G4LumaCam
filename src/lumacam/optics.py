@@ -1000,7 +1000,7 @@ class Lens:
         # Set up directories
         sim_photons_dir = self.archive / "SimPhotons"
         if suffix:
-            traced_photons_dir = self.archive / f"Processed_{suffix}" / "TracedPhotons"
+            traced_photons_dir = self.archive / f"{suffix}" / "TracedPhotons"
         else:
             traced_photons_dir = self.archive / "TracedPhotons"
         traced_photons_dir.mkdir(parents=True, exist_ok=True)
@@ -1306,8 +1306,23 @@ class Lens:
                             result_df.loc[~result_df['in_tpx3'].astype(bool), 'coarse_clock_wrap'] = False
                         # ----------------------------------------------------------------------
 
+                    # Add toa_tick: raw TPX3 hardware tick (1 tick = 1.5625 ns).
+                    # Uses round() to match _write_tpx3 and empindex reconstruction.
+                    # Only meaningful for in_tpx3=True rows; set to -1 elsewhere.
+                    if 'toa2' in result_df.columns:
+                        _toa2 = result_df['toa2'].to_numpy().astype(float)
+                        _valid = np.isfinite(_toa2)
+                        _toa_tick_all = np.full(len(result_df), -1, dtype=np.int64)
+                        _toa_tick_all[_valid] = np.round(
+                            _toa2[_valid] / 1.5625
+                        ).astype(np.int64)
+                        if 'in_tpx3' in result_df.columns:
+                            _toa_tick_all[~result_df['in_tpx3'].to_numpy().astype(bool)] = -1
+                        result_df['toa_tick'] = _toa_tick_all
+
                     # Filter columns to keep for hits workflow
-                    desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'photon_count', 'time_diff',
+                    desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'toa_tick',
+                                    'photon_count', 'time_diff',
                                     'id', 'sim_id', 'neutron_id', 'pulse_id', 'pulse_time_ns',
                                     'in_tpx3']
                     if simulate_ccw:
@@ -1774,7 +1789,7 @@ class Lens:
         
         # Setup output directory
         if suffix:
-            out_dir = self.archive / f"Processed_{suffix}" / "tpx3Files"
+            out_dir = self.archive / f"{suffix}" / "tpx3Files"
         else:
             out_dir = self.archive / "tpx3Files"
         if out_dir.exists() and clean and (file_index is None or file_index == 0):
@@ -1808,7 +1823,11 @@ class Lens:
         tot_ns = np.maximum(df["time_diff"].to_numpy().astype(float), 1.0)
         
         # Convert ToA to 1.5625ns ticks
-        toa_ticks = np.round(toa_ns / TICK_NS).astype(np.int64)
+        toa_ticks = np.where(
+            np.isfinite(toa_ns),
+            np.round(toa_ns / TICK_NS),
+            0,
+        ).astype(np.int64)
         
         # Decompose ToA into packet fields
         spidr_time = ((toa_ticks >> 18) & 0xFFFF).astype(np.int64)  # 16 bits
