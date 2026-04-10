@@ -89,6 +89,7 @@ setup(
     entry_points={
         "console_scripts": [
             "lumacam=G4LumaCam.run_lumacam:main",
+            "lumacam-trace=lumacam.cli:trace_rays_main",
         ]
     },
     cmdclass={
