@@ -13,6 +13,7 @@ Examples:
 
 import argparse
 import sys
+from pathlib import Path
 
 
 def _coerce(value: str):
@@ -83,6 +84,11 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="TPX3 file split strategy.")
     out.add_argument("--suffix", type=str, default="",
                      help="Suffix appended to output file names.")
+    out.add_argument("--sym-suffix", type=str, default=None, metavar="DIR",
+                     help="After tracing, create a tpx3Files symlink inside DIR pointing "
+                          "to the actual tpx3Files output. Useful when the empindex working "
+                          "directory differs from the trace archive (e.g. "
+                          "--suffix z30 --sym-suffix openbeam_ptb/z30).")
 
     # --- performance ---
     perf = p.add_argument_group("performance")
@@ -141,3 +147,20 @@ def trace_rays_main():
         progress_bar=not args.no_progress,
         verbosity=args.verbosity,
     )
+
+    if args.sym_suffix:
+        data_root = Path(args.data_root).resolve()
+        if args.suffix:
+            tpx3_src = data_root / args.suffix / "tpx3Files"
+        else:
+            tpx3_src = data_root / "tpx3Files"
+        sym_dir = Path(args.sym_suffix)
+        if not sym_dir.is_absolute():
+            sym_dir = Path.cwd() / sym_dir
+        sym_dir = sym_dir.resolve()
+        sym_dir.mkdir(parents=True, exist_ok=True)
+        tpx3_link = sym_dir / "tpx3Files"
+        if tpx3_link.is_symlink():
+            tpx3_link.unlink()
+        tpx3_link.symlink_to(tpx3_src)
+        print(f"Symlink created: {tpx3_link} -> {tpx3_src}")
