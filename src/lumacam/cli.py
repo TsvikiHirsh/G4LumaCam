@@ -72,6 +72,12 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="Extra model parameter (repeatable). "
                           "Example: --param noise=0.05")
 
+    # --- detector mode ---
+    p.add_argument("--point-detector", action=argparse.BooleanOptionalAction, default=True,
+                   help="Point-detector mode (default): each photon maps to a single pixel "
+                        "with no blob smearing and no deadtime filter. "
+                        "Use --no-point-detector to enable the full blob/deadtime model.")
+
     # --- CCW simulation ---
     p.add_argument("--simulate-ccw", action="store_true", default=False,
                    help="Simulate the -25 ns coarse-clock wraparound artefact in the "
@@ -139,6 +145,7 @@ def trace_rays_main():
         detector_model=args.detector_model,
         model_params=model_params,
         simulate_ccw=args.simulate_ccw,
+        point_detector=args.point_detector,
         split_method=args.split_method,
         suffix=args.suffix,
         n_processes=args.n_processes,

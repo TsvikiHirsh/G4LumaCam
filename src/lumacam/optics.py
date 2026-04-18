@@ -725,6 +725,7 @@ class Lens:
                     seed: int = None,
                     suffix: str = "",
                     simulate_ccw: bool = False,
+                    point_detector: bool = True,
                     verbosity=VerbosityLevel.BASIC,
                     **kwargs  # Additional model parameters passed as kwargs
                     ) -> Optional[pd.DataFrame]:
@@ -939,6 +940,7 @@ class Lens:
             split_method=split_method,
             suffix=suffix,
             simulate_ccw=simulate_ccw,
+            point_detector=point_detector,
             verbosity=verbosity,
             **kwargs
         )
@@ -953,6 +955,7 @@ class Lens:
                         split_method="auto",
                         suffix: str = "",
                         simulate_ccw: bool = False,
+                        point_detector: bool = True,
                         verbosity=VerbosityLevel.BASIC,
                         **kwargs  # Additional model parameters passed as kwargs
                         ) -> pd.DataFrame or None:
@@ -977,9 +980,9 @@ class Lens:
         if opm_file is not None and not Path(opm_file).exists():
             raise FileNotFoundError(f"Optical model file not found: {opm_file}")
 
-        # Auto-detect source based on deadtime/blob if not specified
+        # Auto-detect source based on deadtime/blob/point_detector if not specified
         if source is None:
-            if (deadtime is not None and deadtime > 0) or blob > 0:
+            if point_detector or (deadtime is not None and deadtime > 0) or blob > 0:
                 source = "hits"
             else:
                 source = "photons"
@@ -988,7 +991,7 @@ class Lens:
             raise ValueError(f"Invalid source: '{source}'. Must be 'hits' or 'photons'")
 
         if source == "hits":
-            if (deadtime is None or deadtime <= 0) and blob <= 0:
+            if not point_detector and (deadtime is None or deadtime <= 0) and blob <= 0:
                 raise ValueError("source='hits' requires either deadtime > 0 or blob > 0")
         
         if deadtime is not None and deadtime <= 0:
@@ -1243,6 +1246,7 @@ class Lens:
                         decay_time=decay_time,
                         detector_model=detector_model,
                         model_params=model_params,
+                        point_detector=point_detector,
                         verbosity=verbosity,
                         **kwargs  # Pass through additional model parameters
                     )
@@ -2764,6 +2768,7 @@ class Lens:
                         decay_time: float = 100.0, seed: int = None,
                         detector_model: Union[str, DetectorModel] = None,
                         model_params: dict = None,
+                        point_detector: bool = False,
                         verbosity: VerbosityLevel = VerbosityLevel.BASIC,
                         **kwargs  # Additional model parameters (e.g., gain=5000, tot_mode="logarithmic")
                         ) -> Union[pd.DataFrame, None]:
@@ -3002,6 +3007,23 @@ class Lens:
                 if verbosity > VerbosityLevel.BASIC:
                     print(f"Warning: Sorting {file_name} by toa2")
                 df = df.sort_values('toa2').reset_index(drop=True)
+
+            # ── Point-detector fast path ──────────────────────────────────────
+            # No blob smearing, no deadtime: each photon maps directly to its
+            # nearest-integer pixel position and becomes its own TPX3 hit.
+            if point_detector:
+                result_df = df.copy()
+                result_df['pixel_x'] = df['pixel_x'].round().astype(int)
+                result_df['pixel_y'] = df['pixel_y'].round().astype(int)
+                result_df['photon_count'] = 1
+                result_df['time_diff'] = min_tot
+                result_df['in_tpx3'] = True
+                if save_results:
+                    output_file = saturated_photons_dir / f"saturated_{file_name}"
+                    result_df.to_csv(output_file, index=False)
+                all_results.append(result_df)
+                continue
+            # ─────────────────────────────────────────────────────────────────
 
             # Extract data arrays (pixel_x, pixel_y are already in integer pixel units)
             px_float = df['pixel_x'].to_numpy()
