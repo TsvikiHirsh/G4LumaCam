@@ -44,3 +44,7 @@ notebooks/logistic_opt_run
 notebooks/lumacam_optimize/
 notebooks/optimize*.ipynb
 notebooks/sim_opt/
+.claude/settings.local.json
+notebooks/grahpite_ptb_for_article.ipynb
+notebooks/read_merge_results.ipynb
+notebooks/read_merge_results.ipynb
