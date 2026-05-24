@@ -1793,7 +1793,10 @@ class Lens:
         else:
             out_dir = self.archive / "tpx3Files"
         if out_dir.exists() and clean and (file_index is None or file_index == 0):
-            shutil.rmtree(out_dir)
+            if out_dir.is_symlink():
+                out_dir.unlink()
+            else:
+                shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         
         base_name = f"traced_data_{file_index}" if file_index is not None else "traced_data"
