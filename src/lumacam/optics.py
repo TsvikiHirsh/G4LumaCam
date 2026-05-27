@@ -159,7 +159,8 @@ def _process_ray_chunk_standalone(chunk, opm_file_path, wvl_values, verbosity=0)
                 opt_model,
                 chunk,
                 output_filter="last",
-                rayerr_filter="summary"
+                rayerr_filter="summary",
+                check_apertures=True,
             )
             if verbosity >= 2:
                 print(f"Successfully traced {len(result)} rays")
@@ -430,6 +431,21 @@ class Lens:
         df = df[['Original Name', 'Value']]
         return df
 
+    def _set_iris_to_fnumber(self, opm: "OpticalModel", stop_idx: int) -> None:
+        # `add_from_file` discards the native ZEMAX STOP marker, so neither lens model
+        # has a designated aperture stop. Without one, every patent .zmx is just a
+        # collection of fixed-diameter glass elements and fnumber has no knob to turn.
+        # Here we (a) designate the surface that was STOP in the original .zmx, and
+        # (b) size its clear aperture to the paraxial axial-ray height at that surface
+        # for the currently-set PupilSpec. Paraxial sizing always succeeds (no
+        # boundary-ray TraceErrors) so this is monotonic in fnumber across the full
+        # range, unlike `set_clear_apertures()` which fails silently for wide apertures.
+        sm = opm.seq_model
+        sm.stop_surface = stop_idx
+        opm.update_model()
+        ax_ray = opm['analysis_results']['parax_data'][0]
+        sm.ifcs[stop_idx].set_max_aperture(abs(ax_ray[stop_idx][0]))
+
     def load_zmx_lens(self, zmx_file: str, focus: float = None, dist_from_obj: float = None,
                       gap_between_lenses: float = None, dist_to_screen: float = None,
                       fnumber: float = None, save: bool = False) -> OpticalModel:
@@ -469,7 +485,18 @@ class Lens:
         elif self.dist_to_screen != 0.0:
             sm.gaps[-1].thi = self.dist_to_screen
         opm.update_model()
-        
+
+        # If the native .zmx had a STOP marker, recover it (rayoptics' add_from_file
+        # drops it during extraction) and size that surface to the requested fnumber.
+        try:
+            from rayoptics.environment import cmds as _cmds
+            native_opm = _cmds.open_model(zmx_file, post_process_imports=False)
+            native_stop = native_opm.seq_model.stop_surface
+        except Exception:
+            native_stop = None
+        if native_stop is not None and 0 < native_stop < len(sm.ifcs) - 1:
+            self._set_iris_to_fnumber(opm, stop_idx=native_stop)
+
         if focus is not None and self.focus_gaps is not None:
             opm = self.refocus(opm=opm, zfine=focus, save=False)
         
@@ -516,7 +543,9 @@ class Lens:
         opm.radius_mode = True
 
         sm.gaps[0].thi = dist_from_obj
-        osp.pupil = PupilSpec(osp, key=['object', 'f/#'], value=fnumber)
+        # Image-side f/# (photographic convention) — matches refocus() and the user-facing
+        # meaning of "fnumber". Object-side f/# would scale with conjugate distance.
+        osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
         osp.field_of_view = FieldSpec(osp, key=['object', 'height'], flds=[0., 1])  # Set field of view
         osp.spectral_region = WvlSpec([(486.1327, 0.5), (587.5618, 1.0), (656.2725, 0.5)], ref_wl=1)
         sm.do_apertures = False
@@ -539,11 +568,14 @@ class Lens:
             opm.add_from_file(str(zmx_path), t=dist_to_screen)
 
         opm.flip(1, 15)
-        
+
         # Store default gap thicknesses for microscope
         self.default_focus_gaps = [(24, sm.gaps[24].thi), (31, sm.gaps[31].thi)]
         opm = self.refocus(opm=opm, zfine=focus, save=False)
         opm.update_model()
+        # First lens's native STOP (Canon 50mm, idx 6) lands at target idx 10 after
+        # the two-zmx stitch + flip(1,15). Designate it and size by fnumber.
+        self._set_iris_to_fnumber(opm, stop_idx=10)
         self.opm0 = deepcopy(opm)
         
 
@@ -581,7 +613,9 @@ class Lens:
 
         # Load the .zmx file
         sm.gaps[0].thi = dist_from_obj
-        osp.pupil = PupilSpec(osp, key=['object', 'f/#'], value=fnumber)
+        # Use image-side f/# (photographic convention) so EPD = efl / fnumber,
+        # independent of object distance. Object-side f/# is ~8x larger here.
+        osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
         osp.field_of_view = FieldSpec(osp, key=['object', 'height'], flds=[0., 60])
         osp.spectral_region = WvlSpec([(486.1327, 0.5), (587.5618, 1.0), (656.2725, 0.5)], ref_wl=1)
         sm.do_apertures = False
@@ -601,6 +635,9 @@ class Lens:
             sm.gaps[30].thi = 1.0
 
         opm.update_model()
+        # The native .zmx marks SURF 14 as STOP (radius 23.959 mm at f/~1.21); rayoptics
+        # `add_from_file` drops that designation, so we restore it and size by fnumber.
+        self._set_iris_to_fnumber(opm, stop_idx=14)
         apply_paraxial_vignetting(opm)
 
         # Verify corrections
@@ -683,9 +720,15 @@ class Lens:
         
         if fnumber is not None:
             osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
-        
+            self.fnumber = fnumber
+
         sm.do_apertures = False
-        opm.update_model()
+        # If a stop surface was designated at build time, re-size its iris from the
+        # (possibly new) PupilSpec. Otherwise just refresh the model.
+        if sm.stop_surface is not None:
+            self._set_iris_to_fnumber(opm, sm.stop_surface)
+        else:
+            opm.update_model()
         apply_paraxial_vignetting(opm)
         
         self.opm = opm
