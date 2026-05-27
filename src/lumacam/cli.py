@@ -50,6 +50,12 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Z-scan offset in mm.")
     optics.add_argument("--fnumber", type=float, default=None,
                         help="F-number override (default: use model value).")
+    optics.add_argument("--no-enforce-aperture", action="store_true", default=False,
+                        help="Disable physical aperture enforcement during tracing. "
+                             "Restores pre-fnumber-enforce-apertures behavior: no iris "
+                             "sizing, no per-surface clipping. fnumber becomes a "
+                             "paraxial-only parameter (no DoF/throughput effect) but "
+                             "all rays propagate. Use for fast/approximate runs.")
 
     # --- detector / saturation ---
     det = p.add_argument_group("detector / saturation")
@@ -126,7 +132,7 @@ def trace_rays_main():
     except ImportError as exc:
         sys.exit(f"Failed to import lumacam: {exc}")
 
-    lens = Lens(args.data_root)
+    lens = Lens(args.data_root, enforce_aperture=not args.no_enforce_aperture)
     lens.trace_rays(
         zfine=args.zfine,
         zscan=args.zscan,

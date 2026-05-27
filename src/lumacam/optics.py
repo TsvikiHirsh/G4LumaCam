@@ -107,7 +107,8 @@ class DetectorModel(IntEnum):
     TIMEPIX3_CALIBRATED = 6    # TPX3-specific calibration
     PHYSICAL_MCP = 7           # Full physics MCP simulation
 
-def _process_ray_chunk_standalone(chunk, opm_file_path, wvl_values, verbosity=0):
+def _process_ray_chunk_standalone(chunk, opm_file_path, wvl_values, verbosity=0,
+                                  check_apertures=True):
     """
     Process a chunk of rays using an optical model loaded from file.
     
@@ -160,7 +161,7 @@ def _process_ray_chunk_standalone(chunk, opm_file_path, wvl_values, verbosity=0)
                 chunk,
                 output_filter="last",
                 rayerr_filter="summary",
-                check_apertures=True,
+                check_apertures=check_apertures,
             )
             if verbosity >= 2:
                 print(f"Successfully traced {len(result)} rays")
@@ -185,6 +186,7 @@ class Lens:
                 gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0, fnumber: float = None,
                 FOV: float = None, magnification: float = None,
                 empir_dirpath: str = None,
+                enforce_aperture: bool = True,
                 verbosity: VerbosityLevel = VerbosityLevel.BASIC):
         """
         Initialize a Lens object with optical model and data management.
@@ -201,9 +203,17 @@ class Lens:
                 Defaults to lens-specific values: nikkor_58mm=461.535, microscope=41.0, zmx_file=100.0.
             gap_between_lenses (float, optional): Gap between lenses in mm. Defaults to 15.0.
             dist_to_screen (float, optional): Distance from last lens to screen in mm. Defaults to 20.0.
-            fnumber (float, optional): F-number of the optical system. Defaults to 8.0.
+            fnumber (float, optional): F-number of the optical system. None uses the
+                per-kind default (0.98 for nikkor_58mm, 8.0 for microscope / zmx_file).
             FOV (float, optional): Field of view in mm. Defaults to None. for 'nikor_58mm', FOV=120mm and for 'microscope', FOV=10mm, for 'zmx_file', FOV=60mm.
             magnification (float, optional): Manually define magnification. Defaults to None.
+            enforce_aperture (bool, optional): When True (default), the aperture stop
+                is sized from `fnumber` and surface intersections are checked during
+                tracing, giving photographic f-stop control over throughput and DoF.
+                Set to False for the pre-fnumber-enforce-apertures behavior: no iris
+                sizing, no per-surface clipping, fnumber affects only paraxial calc.
+                Legacy mode is useful when you need maximum photon throughput per
+                Geant4 input and don't care about absolute aperture-controlled signal.
             verbosity (VerbosityLevel, optional): Verbosity level for logging. Defaults to VerbosityLevel.BASIC.
         Raises:
             ValueError: If invalid lens kind, missing zmx_file for 'zmx_file', or invalid parameters.
@@ -227,6 +237,10 @@ class Lens:
         self.zmx_file = zmx_file
         self.focus_gaps = focus_gaps
         self.FOV = FOV
+        # When False, fall back to the pre-aperture-enforcement behavior: no iris
+        # sizing, no per-surface point_inside() check during trace. Same speed and
+        # output as before this branch; fnumber becomes a paraxial-only parameter.
+        self.enforce_aperture = enforce_aperture
 
         # Validate inputs
         if kind == "zmx_file" and zmx_file is None:
@@ -488,14 +502,15 @@ class Lens:
 
         # If the native .zmx had a STOP marker, recover it (rayoptics' add_from_file
         # drops it during extraction) and size that surface to the requested fnumber.
-        try:
-            from rayoptics.environment import cmds as _cmds
-            native_opm = _cmds.open_model(zmx_file, post_process_imports=False)
-            native_stop = native_opm.seq_model.stop_surface
-        except Exception:
-            native_stop = None
-        if native_stop is not None and 0 < native_stop < len(sm.ifcs) - 1:
-            self._set_iris_to_fnumber(opm, stop_idx=native_stop)
+        if self.enforce_aperture:
+            try:
+                from rayoptics.environment import cmds as _cmds
+                native_opm = _cmds.open_model(zmx_file, post_process_imports=False)
+                native_stop = native_opm.seq_model.stop_surface
+            except Exception:
+                native_stop = None
+            if native_stop is not None and 0 < native_stop < len(sm.ifcs) - 1:
+                self._set_iris_to_fnumber(opm, stop_idx=native_stop)
 
         if focus is not None and self.focus_gaps is not None:
             opm = self.refocus(opm=opm, zfine=focus, save=False)
@@ -573,9 +588,10 @@ class Lens:
         self.default_focus_gaps = [(24, sm.gaps[24].thi), (31, sm.gaps[31].thi)]
         opm = self.refocus(opm=opm, zfine=focus, save=False)
         opm.update_model()
-        # First lens's native STOP (Canon 50mm, idx 6) lands at target idx 10 after
-        # the two-zmx stitch + flip(1,15). Designate it and size by fnumber.
-        self._set_iris_to_fnumber(opm, stop_idx=10)
+        if self.enforce_aperture:
+            # First lens's native STOP (Canon 50mm, idx 6) lands at target idx 10
+            # after the two-zmx stitch + flip(1,15). Designate it and size by fnumber.
+            self._set_iris_to_fnumber(opm, stop_idx=10)
         self.opm0 = deepcopy(opm)
         
 
@@ -635,9 +651,11 @@ class Lens:
             sm.gaps[30].thi = 1.0
 
         opm.update_model()
-        # The native .zmx marks SURF 14 as STOP (radius 23.959 mm at f/~1.21); rayoptics
-        # `add_from_file` drops that designation, so we restore it and size by fnumber.
-        self._set_iris_to_fnumber(opm, stop_idx=14)
+        if self.enforce_aperture:
+            # The native .zmx marks SURF 14 as STOP (radius 23.959 mm at f/~1.21);
+            # rayoptics `add_from_file` drops that designation, so we restore it and
+            # size by fnumber. Skip when enforce_aperture=False (legacy behavior).
+            self._set_iris_to_fnumber(opm, stop_idx=14)
         apply_paraxial_vignetting(opm)
 
         # Verify corrections
@@ -725,7 +743,7 @@ class Lens:
         sm.do_apertures = False
         # If a stop surface was designated at build time, re-size its iris from the
         # (possibly new) PupilSpec. Otherwise just refresh the model.
-        if sm.stop_surface is not None:
+        if self.enforce_aperture and sm.stop_surface is not None:
             self._set_iris_to_fnumber(opm, sm.stop_surface)
         else:
             opm.update_model()
@@ -1183,7 +1201,8 @@ class Lens:
                     _process_ray_chunk_standalone,
                     opm_file_path=opm_file_path,
                     wvl_values=wvl_values,
-                    verbosity=verbosity
+                    verbosity=verbosity,
+                    check_apertures=self.enforce_aperture,
                 )
                 
                 try:
