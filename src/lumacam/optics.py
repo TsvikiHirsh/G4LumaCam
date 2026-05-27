@@ -181,7 +181,7 @@ class Lens:
     def __init__(self, archive: str = None, data: "pd.DataFrame" = None,
                 kind: str = "nikkor_58mm", zfine: float = 12.75, zmx_file: str = None,
                 focus_gaps: List[Tuple[int, float]] = None, dist_from_obj: float = None,
-                gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0, fnumber: float = 8.0,
+                gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0, fnumber: float = None,
                 FOV: float = None, magnification: float = None,
                 empir_dirpath: str = None,
                 verbosity: VerbosityLevel = VerbosityLevel.BASIC):
@@ -236,7 +236,7 @@ class Lens:
             self.dist_from_obj = dist_from_obj if dist_from_obj else 461.535
             self.gap_between_lenses = 0.0
             self.dist_to_screen = 0.0
-            self.fnumber = fnumber if fnumber != 8.0 else 0.98
+            self.fnumber = 0.98 if fnumber is None else fnumber
             self.default_focus_gaps = [(22, 2.68)]
             if self.FOV is None:
                 self.FOV = 120.0
@@ -244,7 +244,7 @@ class Lens:
             self.dist_from_obj = dist_from_obj if dist_from_obj else 41.0
             self.gap_between_lenses = gap_between_lenses
             self.dist_to_screen = dist_to_screen
-            self.fnumber = fnumber
+            self.fnumber = 8.0 if fnumber is None else fnumber
             self.default_focus_gaps = [(24, None), (31, None)]
             if self.FOV is None:
                 self.FOV = 10.0
@@ -253,7 +253,7 @@ class Lens:
             self.dist_from_obj = dist_from_obj if dist_from_obj is not None else 100.0  # Default distance
             self.gap_between_lenses = gap_between_lenses
             self.dist_to_screen = dist_to_screen
-            self.fnumber = fnumber
+            self.fnumber = 8.0 if fnumber is None else fnumber
             self.default_focus_gaps = focus_gaps or []
             if focus_gaps is None:
                 print("Warning: focus_gaps not provided for zmx_file; focus adjustment will have no effect")
@@ -299,7 +299,7 @@ class Lens:
             if zfine is not None:
                 self.opm = self.refocus(zfine=zfine, save=False)
         elif self.kind == "microscope":
-            self.opm0 = self.microscope_nikor_80_200mm_canon_50mm(focus=zfine or 0.0, save=False)
+            self.opm0 = self.microscope_nikor_80_200mm_canon_50mm(focus=zfine or 0.0, fnumber=self.fnumber, save=False)
             self.opm = deepcopy(self.opm0)
             if zfine is not None:
                 self.opm = self.refocus(zfine=zfine, save=False)

@@ -1,0 +1,25 @@
+{
+  "pixel2photon": {
+    "dSpace": 2,
+    "dTime": 1e-07,
+    "nPxMin": 8,
+    "TDC1": true,
+    "nPxMax": 100
+  },
+  "photon2event": {
+    "dSpace_px": 0.001,
+    "dTime_s": 5e-08,
+    "dTime_ext": 5,
+    "durationMax_s": 5e-07
+  },
+  "event2image": {
+    "nPhotons_min": 1,
+    "nPhotons_max": 1,
+    "size_x": 512,
+    "size_y": 512,
+    "psd_min": 0,
+    "time_extTrigger": "reference",
+    "time_res_s": 1.5625e-09,
+    "time_limit": 640
+  }
+}
