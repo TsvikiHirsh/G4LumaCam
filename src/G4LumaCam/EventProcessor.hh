@@ -40,7 +40,6 @@ private:
     std::vector<PhotonRecord> photons;
     std::map<G4int, TrackData> tracks;
     G4double neutronPos[3], neutronEnergy, protonEnergy;
-    G4double lensPos[2];
     G4int neutronCount, batchCount, eventCount;
     std::ofstream dataFile;
     ParticleGenerator* particleGen;

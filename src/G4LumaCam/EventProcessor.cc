@@ -27,7 +27,6 @@ void EventProcessor::resetData() {
     neutronPos[0] = neutronPos[1] = neutronPos[2] = 0.;
     neutronEnergy = 0.;
     protonEnergy = 0.;
-    lensPos[0] = lensPos[1] = 0.;
     neutronRecorded = false;
     currentEventTriggerTime = -1.0;
 }
@@ -135,11 +134,30 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
 
     // Process photons that reach the monitor
     if (volName == "MonitorPhys" && particleName == "opticalphoton") {
-        lensPos[0] = postStep->GetPosition().x() / mm + 500. * preStep->GetMomentumDirection().x();
-        lensPos[1] = postStep->GetPosition().y() / mm + 500. * preStep->GetMomentumDirection().y();
+        // Accept only photons whose birth ray intersects the entrance pupil.
+        // Project (x0,y0,z0)+(dx0,dy0,dz0)*t to z = dist_from_obj (Python's lens plane)
+        // and test against the circular EPD — matches Python's trace exactly.
+        static const G4double LENS_Z_MM = 461.535;        // dist_from_obj (mm)
+        static const G4double EPD_R2    = 30.53 * 30.53;  // (EFL/f# /2)^2, f/0.95 58mm
 
-        // Check if photon is within acceptance window
-        if (lensPos[0] > -27.5 && lensPos[0] < 27.5 && lensPos[1] > -27.5 && lensPos[1] < 27.5) {
+        bool inLens = false;
+        auto birthIt = tracks.find(tid);
+        if (birthIt != tracks.end()) {
+            G4double x0  = birthIt->second.x0 / mm;
+            G4double y0  = birthIt->second.y0 / mm;
+            G4double z0  = birthIt->second.z0 / mm;
+            G4double dx0 = birthIt->second.dx0;
+            G4double dy0 = birthIt->second.dy0;
+            G4double dz0 = birthIt->second.dz0;
+            if (dz0 > 1e-6) {
+                G4double t      = (LENS_Z_MM - z0) / dz0;
+                G4double x_lens = x0 + dx0 * t;
+                G4double y_lens = y0 + dy0 * t;
+                inLens = (x_lens*x_lens + y_lens*y_lens < EPD_R2);
+            }
+        }
+
+        if (inLens) {
             if (tracks.find(parentID) == tracks.end()) {
                 tracks[parentID] = {"unknown", neutronPos[0], neutronPos[1], neutronPos[2], neutronEnergy, true, 0., 0., 0., 0., 0., 0.};
             }
