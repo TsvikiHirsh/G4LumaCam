@@ -68,6 +68,7 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
     new G4PVPlacement(nullptr, G4ThreeVector(-Sim::SCINT_SIZE/2 + Sim::SAMPLE_WIDTH/2, 0, -Sim::SCINT_THICKNESS - Sim::COATING_THICKNESS - Sim::SAMPLE_THICKNESS/2), 
                       sampleLog, "SamplePhys", worldLog, false, 0, true);
     sampleLog->SetVisAttributes(sampleVisAttributes);
+    sampleLog->SetSensitiveDetector(eventProc);
 
     // Set sampleLog in LumaCamMessenger
     if (lumaCamMessenger) {
