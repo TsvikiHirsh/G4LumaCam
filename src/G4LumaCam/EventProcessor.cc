@@ -75,18 +75,28 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
         }
     }
 
-    // Record neutron position at first interaction in ScintPhys or SamplePhys
+    // Record neutron position in ScintPhys or SamplePhys.
+    // Nuclear interaction (non-Transportation): record the interaction point — this is
+    // the true conversion position and takes priority over the entry fallback below.
+    // First-step entry (Transportation, step==1): record the scintillator entry face as
+    // a fallback so that events where the neutron only scatters in surrounding air (and
+    // nz would otherwise stay frozen at the source vertex) still get a meaningful nz.
     if ((volName == "ScintPhys" || volName == "SamplePhys") && parentID == 0 && particleName == "neutron") {
-        G4String processName = postStep->GetProcessDefinedStep() ? 
+        G4String processName = postStep->GetProcessDefinedStep() ?
                                postStep->GetProcessDefinedStep()->GetProcessName() : "None";
         if (processName != "Transportation") {
+            // True nuclear interaction: overwrite with actual conversion point.
             neutronPos[0] = postPos.x();
             neutronPos[1] = postPos.y();
             neutronPos[2] = postPos.z();
-            // G4cout << "Neutron position set in " << volName << " for event " 
-            //        << G4RunManager::GetRunManager()->GetCurrentEvent()->GetEventID() 
-            //        << ": (" << neutronPos[0] / mm << ", " << neutronPos[1] / mm 
-            //        << ", " << neutronPos[2] / mm << ") mm" << G4endl;
+        } else if (track->GetCurrentStepNumber() == 1) {
+            // First Transportation step = neutron just entered this volume.
+            // Only set if not already overwritten by a real interaction (nz != source z).
+            if (neutronPos[2] < -1000. * mm) {
+                neutronPos[0] = prePos.x();
+                neutronPos[1] = prePos.y();
+                neutronPos[2] = prePos.z();
+            }
         }
     }
 
@@ -97,13 +107,15 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             if (parentID != 0 && energy <= 0) {
                 energy = neutronEnergy;
             }
-            tracks[tid] = {particleName, prePos.x(), prePos.y(), prePos.z(), energy, false, 0., 0., 0., 0., 0., 0.};
+            // x0/y0/z0 = birth position (frozen); x/y/z updated to last scintillation step.
+            tracks[tid] = {particleName, prePos.x(), prePos.y(), prePos.z(), energy, false,
+                           prePos.x(), prePos.y(), prePos.z(), 0., 0., 0.};
         }
 
-        G4String processName = postStep->GetProcessDefinedStep() ? 
+        G4String processName = postStep->GetProcessDefinedStep() ?
                                postStep->GetProcessDefinedStep()->GetProcessName() : "None";
         if (processName == "Scintillation" || processName == "Cerenkov") {
-            tracks[tid].x = prePos.x();
+            tracks[tid].x = prePos.x();  // last scintillation step ≈ Bragg peak
             tracks[tid].y = prePos.y();
             tracks[tid].z = prePos.z();
             tracks[tid].isLightProducer = true;
@@ -134,26 +146,29 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
 
     // Process photons that reach the monitor
     if (volName == "MonitorPhys" && particleName == "opticalphoton") {
-        // Accept only photons that will enter the entrance pupil.
-        // Use exit position and direction (what Python traces), project to the
-        // lens plane at z = dist_from_obj = 461.535mm from the exit face (z=0).
-        // This matches exactly what Python's trace_list_of_rays receives.
+        // Accept only photons aimed at the entrance pupil.
+        // Project birth position + birth direction to z = dist_from_obj = 461.535mm.
+        // This matches Python exactly: the CSV writes birth pos/dir as x,y,z,dx,dy,dz,
+        // and Python traces from there. Black back-coating ensures all photons reaching
+        // the monitor were born going forward, so birth direction == exit direction.
         static const G4double LENS_Z_MM = 461.535;       // dist_from_obj (mm)
         static const G4double EPD_R2    = 30.53 * 30.53; // (EFL/f# /2)^2, f/0.95 58mm
 
-        G4double x_exit = prePos.x() / mm;  // exit position (same as rec.x)
-        G4double y_exit = prePos.y() / mm;  // exit position (same as rec.y)
-        G4double dx     = preDir.x();       // exit direction (same as rec.dx)
-        G4double dy     = preDir.y();
-        G4double dz     = preDir.z();
-
         bool inLens = false;
-        if (dz > 1e-6) {
-            // Python traces from (x_exit, y_exit, z=0): rec.z is forced to 0
-            G4double t      = LENS_Z_MM / dz;
-            G4double x_lens = x_exit + dx * t;
-            G4double y_lens = y_exit + dy * t;
-            inLens = (x_lens*x_lens + y_lens*y_lens < EPD_R2);
+        auto birthIt = tracks.find(tid);
+        if (birthIt != tracks.end()) {
+            G4double x0  = birthIt->second.x0 / mm;
+            G4double y0  = birthIt->second.y0 / mm;
+            G4double z0  = birthIt->second.z0 / mm;
+            G4double dx0 = birthIt->second.dx0;
+            G4double dy0 = birthIt->second.dy0;
+            G4double dz0 = birthIt->second.dz0;
+            if (dz0 > 1e-6) {
+                G4double t      = (LENS_Z_MM - z0) / dz0;
+                G4double x_lens = x0 + dx0 * t;
+                G4double y_lens = y0 + dy0 * t;
+                inLens = (x_lens*x_lens + y_lens*y_lens < EPD_R2);
+            }
         }
 
         if (inLens) {
@@ -170,15 +185,7 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             rec.parentId = parentID;
             rec.neutronId = neutronCount;
             
-            // Position and direction at monitor
-            rec.x = prePos.x() / mm;
-            rec.y = prePos.y() / mm;
-            rec.z = 0.; 
-            rec.dx = preDir.x();
-            rec.dy = preDir.y();
-            rec.dz = preDir.z();
-            
-            // Generation position and direction
+            // Photon birth position and direction inside scintillator
             if (tracks.find(tid) != tracks.end()) {
                 rec.x0 = tracks[tid].x0 / mm;
                 rec.y0 = tracks[tid].y0 / mm;
@@ -187,17 +194,16 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
                 rec.dy0 = tracks[tid].dy0;
                 rec.dz0 = tracks[tid].dz0;
             } else {
-                // Fallback if generation info not found
                 rec.x0 = rec.y0 = rec.z0 = 0.;
                 rec.dx0 = rec.dy0 = rec.dz0 = 0.;
             }
-            
+
             rec.timeOfArrival = track->GetGlobalTime() / ns;
             rec.wavelength = 1240. / (track->GetTotalEnergy() / eV);
             rec.parentType = tracks[parentID].type;
-            rec.px = tracks[parentID].x / mm;
-            rec.py = tracks[parentID].y / mm;
-            rec.pz = tracks[parentID].z / mm;
+            rec.px = tracks[parentID].x0 / mm;   // parent birth position (= neutron interaction vertex)
+            rec.py = tracks[parentID].y0 / mm;
+            rec.pz = tracks[parentID].z0 / mm;
             rec.parentEnergy = tracks[parentID].energy;
             rec.nx = neutronPos[0] / mm;
             rec.ny = neutronPos[1] / mm;
@@ -275,10 +281,10 @@ void EventProcessor::openOutputFile() {
     
     // Updated header with generation position (x0,y0,z0) and direction (dx0,dy0,dz0)
     dataFile << "id,parent_id,neutron_id,pulse_id,pulse_time_ns,"
-             << "x,y,z,dx,dy,dz,"
-            //  << "x0,y0,z0,dx0,dy0,dz0,"
+             << "x,y,z,dx,dy,dz,"      // photon birth pos/dir inside scintillator
              << "toa,wavelength,"
-             << "parentName,px,py,pz,parentEnergy,nx,ny,nz,neutronEnergy\n";
+             << "parentName,px,py,pz,parentEnergy,"  // px/py/pz = parent birth pos
+             << "nx,ny,nz,neutronEnergy\n";
 }
 
 void EventProcessor::writeData() {
@@ -292,41 +298,30 @@ void EventProcessor::writeData() {
         // HIGH PRECISION: pulse_time_ns
         dataFile << std::setprecision(15) << p.pulseTime << ",";
         
-        // MEDIUM PRECISION: exit position at monitor (mm) — what Python traces from
+        // MEDIUM PRECISION: photon birth position inside scintillator
         dataFile << std::setprecision(4)
-                 << p.x << ","
-                 << p.y << ","
-                 << p.z << ",";
+                 << p.x0 << "," << p.y0 << "," << p.z0 << ",";
 
-        // MEDIUM PRECISION: exit direction at monitor — what Python uses for ray direction
+        // MEDIUM PRECISION: photon birth direction
         dataFile << std::setprecision(6)
-                 << p.dx << ","
-                 << p.dy << ","
-                 << p.dz << ",";
-        
+                 << p.dx0 << "," << p.dy0 << "," << p.dz0 << ",";
+
         // HIGH PRECISION: timeOfArrival
         dataFile << std::setprecision(15) << p.timeOfArrival << ",";
-        
+
         // LOW PRECISION: wavelength (nm)
-        dataFile << std::setprecision(2) << p.wavelength << "," 
-                 << p.parentType << ",";
-        
-        // MEDIUM PRECISION: parent position (mm)
+        dataFile << std::setprecision(2) << p.wavelength << "," << p.parentType << ",";
+
+        // MEDIUM PRECISION: parent birth position (= neutron interaction vertex for direct events)
         dataFile << std::setprecision(4)
-                 << p.px << "," 
-                 << p.py << "," 
-                 << p.pz << ",";
-        
-        // MEDIUM PRECISION: energies (MeV)
+                 << p.px << "," << p.py << "," << p.pz << ",";
+
         dataFile << std::setprecision(4) << p.parentEnergy << ",";
-        
-        // MEDIUM PRECISION: neutron position (mm)
+
+        // MEDIUM PRECISION: neutron first interaction point and energy
         dataFile << std::setprecision(4)
-                 << p.nx << "," 
-                 << p.ny << "," 
-                 << p.nz << ",";
-        
-        // MEDIUM PRECISION: neutron energy (MeV)
+                 << p.nx << "," << p.ny << "," << p.nz << ",";
+
         dataFile << std::setprecision(4) << p.neutronEnergy << "\n";
     }
     dataFile.flush();

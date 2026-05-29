@@ -329,8 +329,10 @@ class Lens:
         # get the multiplication value for converting from mm to pixels
         if magnification is not None:
             self.reduction_ratio = magnification
+            self._magnification_override = True
         else:
-            self.reduction_ratio = self.get_first_order_parameters().loc["Reduction Ratio","Value"]
+            self._magnification_override = False
+            self.reduction_ratio = self.get_first_order_parameters(opm=self.opm).loc["Reduction Ratio","Value"]
 
         from lumacam.empir import resolve_empir_dir
         try:
@@ -758,12 +760,18 @@ class Lens:
         apply_paraxial_vignetting(opm)
         
         self.opm = opm
-        
+        # Keep pixel mapping consistent with the new focal state.
+        if not hasattr(self, '_magnification_override') or not self._magnification_override:
+            try:
+                self.reduction_ratio = self.get_first_order_parameters(opm=opm).loc["Reduction Ratio", "Value"]
+            except Exception:
+                pass  # keep previous value if parax update fails
+
         if save:
             fnumber_str = f"_f{fnumber:.2f}" if fnumber is not None else ""
             save_path = self.archive / f"refocus_zscan_{zscan}_zfine_{zfine}{fnumber_str}.roa"
             opm.save_model(save_path)
-        
+
         return opm
 
     def _chunk_rays(self, rays, chunk_size):
