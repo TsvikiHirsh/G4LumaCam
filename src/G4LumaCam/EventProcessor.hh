@@ -19,11 +19,11 @@ public:
 private:
     struct PhotonRecord {
         G4int id, parentId, neutronId;
-        G4double x0, y0, z0, dx0, dy0, dz0;  // photon birth pos/dir inside scintillator
+        G4double x0, y0, z0, dx0, dy0, dz0;  // photon birth pos+dir (Python traces from here)
         G4double timeOfArrival;
         G4double wavelength, parentEnergy, neutronEnergy;
         G4String parentType;
-        G4double px, py, pz;  // parent birth position (= neutron interaction vertex for direct events)
+        G4double px, py, pz;  // parent birth position
         G4double nx, ny, nz;  // neutron first interaction point
         G4int pulseId;
         G4double pulseTime;

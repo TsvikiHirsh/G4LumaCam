@@ -147,28 +147,24 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
     // Process photons that reach the monitor
     if (volName == "MonitorPhys" && particleName == "opticalphoton") {
         // Accept only photons aimed at the entrance pupil.
-        // Project birth position + birth direction to z = dist_from_obj = 461.535mm.
-        // This matches Python exactly: the CSV writes birth pos/dir as x,y,z,dx,dy,dz,
-        // and Python traces from there. Black back-coating ensures all photons reaching
-        // the monitor were born going forward, so birth direction == exit direction.
+        // Python traces from exit position (x,y,z=0) with exit direction (dx,dy,dz).
+        // Project that same ray to z = dist_from_obj = 461.535mm for the EPD check.
         static const G4double LENS_Z_MM = 461.535;       // dist_from_obj (mm)
         static const G4double EPD_R2    = 30.53 * 30.53; // (EFL/f# /2)^2, f/0.95 58mm
 
+        G4double x_exit = prePos.x() / mm;
+        G4double y_exit = prePos.y() / mm;
+        G4double dx     = preDir.x();
+        G4double dy     = preDir.y();
+        G4double dz     = preDir.z();
+
         bool inLens = false;
-        auto birthIt = tracks.find(tid);
-        if (birthIt != tracks.end()) {
-            G4double x0  = birthIt->second.x0 / mm;
-            G4double y0  = birthIt->second.y0 / mm;
-            G4double z0  = birthIt->second.z0 / mm;
-            G4double dx0 = birthIt->second.dx0;
-            G4double dy0 = birthIt->second.dy0;
-            G4double dz0 = birthIt->second.dz0;
-            if (dz0 > 1e-6) {
-                G4double t      = (LENS_Z_MM - z0) / dz0;
-                G4double x_lens = x0 + dx0 * t;
-                G4double y_lens = y0 + dy0 * t;
-                inLens = (x_lens*x_lens + y_lens*y_lens < EPD_R2);
-            }
+        if (dz > 1e-6) {
+            // Python traces from (x_exit, y_exit, z=0), so project from z=0 to lens
+            G4double t      = LENS_Z_MM / dz;
+            G4double x_lens = x_exit + dx * t;
+            G4double y_lens = y_exit + dy * t;
+            inLens = (x_lens*x_lens + y_lens*y_lens < EPD_R2);
         }
 
         if (inLens) {
@@ -184,18 +180,20 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             rec.id = track->GetTrackID();
             rec.parentId = parentID;
             rec.neutronId = neutronCount;
-            
-            // Photon birth position and direction inside scintillator
+
+            // Birth position+direction: Python traces from here.
+            // x0,y0,z0 is the true object point — no lateral drift error vs exit pos.
+            // Birth dir == exit dir (black coating means no reflections, straight travel).
             if (tracks.find(tid) != tracks.end()) {
-                rec.x0 = tracks[tid].x0 / mm;
-                rec.y0 = tracks[tid].y0 / mm;
-                rec.z0 = tracks[tid].z0 / mm;
+                rec.x0  = tracks[tid].x0 / mm;
+                rec.y0  = tracks[tid].y0 / mm;
+                rec.z0  = tracks[tid].z0 / mm;
                 rec.dx0 = tracks[tid].dx0;
                 rec.dy0 = tracks[tid].dy0;
                 rec.dz0 = tracks[tid].dz0;
             } else {
                 rec.x0 = rec.y0 = rec.z0 = 0.;
-                rec.dx0 = rec.dy0 = rec.dz0 = 0.;
+                rec.dx0 = rec.dy0 = 0.;  rec.dz0 = 1.;
             }
 
             rec.timeOfArrival = track->GetGlobalTime() / ns;
@@ -281,7 +279,7 @@ void EventProcessor::openOutputFile() {
     
     // Updated header with generation position (x0,y0,z0) and direction (dx0,dy0,dz0)
     dataFile << "id,parent_id,neutron_id,pulse_id,pulse_time_ns,"
-             << "x,y,z,dx,dy,dz,"      // photon birth pos/dir inside scintillator
+             << "x,y,z,dx,dy,dz,"   // photon birth pos+dir (Python traces from here)
              << "toa,wavelength,"
              << "parentName,px,py,pz,parentEnergy,"  // px/py/pz = parent birth pos
              << "nx,ny,nz,neutronEnergy\n";
@@ -298,13 +296,9 @@ void EventProcessor::writeData() {
         // HIGH PRECISION: pulse_time_ns
         dataFile << std::setprecision(15) << p.pulseTime << ",";
         
-        // MEDIUM PRECISION: photon birth position inside scintillator
-        dataFile << std::setprecision(4)
-                 << p.x0 << "," << p.y0 << "," << p.z0 << ",";
-
-        // MEDIUM PRECISION: photon birth direction
-        dataFile << std::setprecision(6)
-                 << p.dx0 << "," << p.dy0 << "," << p.dz0 << ",";
+        // Photon birth position (x,y,z) and direction — Python traces from birth pos
+        dataFile << std::setprecision(4) << p.x0 << "," << p.y0 << "," << p.z0 << ",";
+        dataFile << std::setprecision(6) << p.dx0 << "," << p.dy0 << "," << p.dz0 << ",";
 
         // HIGH PRECISION: timeOfArrival
         dataFile << std::setprecision(15) << p.timeOfArrival << ",";
