@@ -72,6 +72,12 @@ class Config:
     # Run parameters
     num_events: int = 100000
     progress_interval: int = 100
+
+    def __post_init__(self):
+        # Geant4 /run/beamOn requires a plain integer; guard against float inputs
+        self.num_events = int(self.num_events)
+        self.progress_interval = int(self.progress_interval)
+        self.csv_batch_size = int(self.csv_batch_size)
     csv_filename: str = "sim_data.csv"
 
     @classmethod
@@ -402,7 +408,7 @@ class Config:
 /lumacam/sampleMaterial {self.sample_material}
 /lumacam/batchSize {self.csv_batch_size}
 /control/verbose 2
-/run/beamOn {self.num_events}
+/run/beamOn {int(self.num_events)}
 """
         with open(output_file, 'w') as f:
             f.write(macro_content.strip())
