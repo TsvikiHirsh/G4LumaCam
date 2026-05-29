@@ -454,11 +454,20 @@ class Lens:
         # for the currently-set PupilSpec. Paraxial sizing always succeeds (no
         # boundary-ray TraceErrors) so this is monotonic in fnumber across the full
         # range, unlike `set_clear_apertures()` which fails silently for wide apertures.
+        # All non-stop surfaces are opened to a large aperture so only the iris clips
+        # rays during tracing — .zmx design apertures (and the 1mm object/image defaults)
+        # would otherwise vignette the large scintillator field.
         sm = opm.seq_model
         sm.stop_surface = stop_idx
         opm.update_model()
         ax_ray = opm['analysis_results']['parax_data'][0]
         sm.ifcs[stop_idx].set_max_aperture(abs(ax_ray[stop_idx][0]))
+        for i, ifc in enumerate(sm.ifcs):
+            if i != stop_idx:
+                try:
+                    ifc.set_max_aperture(1000.0)
+                except Exception:
+                    pass
 
     def load_zmx_lens(self, zmx_file: str, focus: float = None, dist_from_obj: float = None,
                       gap_between_lenses: float = None, dist_to_screen: float = None,

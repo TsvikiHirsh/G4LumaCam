@@ -134,27 +134,26 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
 
     // Process photons that reach the monitor
     if (volName == "MonitorPhys" && particleName == "opticalphoton") {
-        // Accept only photons whose birth ray intersects the entrance pupil.
-        // Project (x0,y0,z0)+(dx0,dy0,dz0)*t to z = dist_from_obj (Python's lens plane)
-        // and test against the circular EPD — matches Python's trace exactly.
-        static const G4double LENS_Z_MM = 461.535;        // dist_from_obj (mm)
-        static const G4double EPD_R2    = 30.53 * 30.53;  // (EFL/f# /2)^2, f/0.95 58mm
+        // Accept only photons that will enter the entrance pupil.
+        // Use exit position and direction (what Python traces), project to the
+        // lens plane at z = dist_from_obj = 461.535mm from the exit face (z=0).
+        // This matches exactly what Python's trace_list_of_rays receives.
+        static const G4double LENS_Z_MM = 461.535;       // dist_from_obj (mm)
+        static const G4double EPD_R2    = 30.53 * 30.53; // (EFL/f# /2)^2, f/0.95 58mm
+
+        G4double x_exit = prePos.x() / mm;  // exit position (same as rec.x)
+        G4double y_exit = prePos.y() / mm;  // exit position (same as rec.y)
+        G4double dx     = preDir.x();       // exit direction (same as rec.dx)
+        G4double dy     = preDir.y();
+        G4double dz     = preDir.z();
 
         bool inLens = false;
-        auto birthIt = tracks.find(tid);
-        if (birthIt != tracks.end()) {
-            G4double x0  = birthIt->second.x0 / mm;
-            G4double y0  = birthIt->second.y0 / mm;
-            G4double z0  = birthIt->second.z0 / mm;
-            G4double dx0 = birthIt->second.dx0;
-            G4double dy0 = birthIt->second.dy0;
-            G4double dz0 = birthIt->second.dz0;
-            if (dz0 > 1e-6) {
-                G4double t      = (LENS_Z_MM - z0) / dz0;
-                G4double x_lens = x0 + dx0 * t;
-                G4double y_lens = y0 + dy0 * t;
-                inLens = (x_lens*x_lens + y_lens*y_lens < EPD_R2);
-            }
+        if (dz > 1e-6) {
+            // Python traces from (x_exit, y_exit, z=0): rec.z is forced to 0
+            G4double t      = LENS_Z_MM / dz;
+            G4double x_lens = x_exit + dx * t;
+            G4double y_lens = y_exit + dy * t;
+            inLens = (x_lens*x_lens + y_lens*y_lens < EPD_R2);
         }
 
         if (inLens) {
@@ -293,33 +292,17 @@ void EventProcessor::writeData() {
         // HIGH PRECISION: pulse_time_ns
         dataFile << std::setprecision(15) << p.pulseTime << ",";
         
-        // // MEDIUM PRECISION: position at monitor (mm)
-        // dataFile << std::setprecision(4) 
-        //          << p.x << "," 
-        //          << p.y << "," 
-        //          << p.z << ",";
-        
-        // // MEDIUM PRECISION: direction at monitor
-        // dataFile << std::setprecision(6)
-        //          << p.dx << "," 
-        //          << p.dy << "," 
-        //          << p.dz << ",";
-        
-
-        // I switched the order of position/direction at monitor and generation position/direction for better clarity
-        // Only the generation position/direction is written below now
-
-        // MEDIUM PRECISION: generation position (mm)
+        // MEDIUM PRECISION: exit position at monitor (mm) — what Python traces from
         dataFile << std::setprecision(4)
-                 << p.x0 << "," 
-                 << p.y0 << "," 
-                 << p.z0 << ",";
-        
-        // MEDIUM PRECISION: generation direction
+                 << p.x << ","
+                 << p.y << ","
+                 << p.z << ",";
+
+        // MEDIUM PRECISION: exit direction at monitor — what Python uses for ray direction
         dataFile << std::setprecision(6)
-                 << p.dx0 << "," 
-                 << p.dy0 << "," 
-                 << p.dz0 << ",";
+                 << p.dx << ","
+                 << p.dy << ","
+                 << p.dz << ",";
         
         // HIGH PRECISION: timeOfArrival
         dataFile << std::setprecision(15) << p.timeOfArrival << ",";
