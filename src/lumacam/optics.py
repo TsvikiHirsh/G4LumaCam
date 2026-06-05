@@ -186,7 +186,7 @@ class Lens:
                 gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0, fnumber: float = None,
                 FOV: float = None, magnification: float = None,
                 empir_dirpath: str = None,
-                enforce_aperture: bool = True,
+                enforce_aperture: bool = False,
                 verbosity: VerbosityLevel = VerbosityLevel.BASIC):
         """
         Initialize a Lens object with optical model and data management.
@@ -1140,9 +1140,32 @@ class Lens:
 
             all_results = []
 
+            # --- Trace-stage f-number filter --------------------------------
+            # G4 EventProcessor lets through a disk of radius (EFL/2)/0.95 at the
+            # lens plane (the widest cone the lens can accept). To simulate a
+            # smaller working aperture without re-running G4, we drop photons
+            # whose ray projects past EFL/(2*fnumber) at the lens. fnumber=0.95
+            # is a no-op (matches G4); fnumber=2 keeps ~(0.95/2)^2 ≈ 23%.
+            epd_radius_mm = None
+            try:
+                _fn = fnumber if fnumber is not None else self.fnumber
+                if _fn is not None and _fn > 0:
+                    _fod = self.opm['analysis_results']['parax_data'][2]
+                    _efl = abs(_fod.efl) if _fod is not None else None
+                    if _efl is not None and _efl > 0:
+                        epd_radius_mm = _efl / (2.0 * _fn)
+                        if verbosity >= VerbosityLevel.BASIC:
+                            print(f"  f-number trace filter: f/{_fn:.3g}  EFL={_efl:.3f} mm  "
+                                  f"=>  EPD radius {epd_radius_mm:.3f} mm at lens "
+                                  f"(z={self.dist_from_obj + zscan:.3f} mm)")
+            except Exception as _e:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"  EPD radius computation failed ({_e}); no fnumber filter applied")
+            # ----------------------------------------------------------------
+
             # Progress bar for file processing
             file_desc = f"Processing {len(valid_files)} files"
-            file_iter = tqdm(valid_files, desc=file_desc, 
+            file_iter = tqdm(valid_files, desc=file_desc,
                             disable=not progress_bar or verbosity == VerbosityLevel.QUIET)
             
             for file_idx, csv_file in enumerate(file_iter):
@@ -1195,17 +1218,47 @@ class Lens:
                     print(f"  Chunk size: {chunk_size}")
                     print(f"  Processes: {n_processes or 'auto'}")
 
-                # Convert DataFrame to ray format
-                rays = [
-                    (np.array([row.x, row.y, row.z], dtype=np.float64),
-                    np.array([row.dx, row.dy, row.dz], dtype=np.float64),
-                    np.array([row.wavelength], dtype=np.float64))
-                    for row in df.itertuples()
-                ]
+                # Apply the f-number entrance-pupil filter (if active).
+                # Photons whose ray projects past EPD radius at the lens plane
+                # are dropped — they end up as NaN positions in result_df, which
+                # downstream `in_tpx3` handling treats as lost (off-sensor).
+                if epd_radius_mm is not None:
+                    lens_z = self.dist_from_obj + zscan
+                    dz_arr = df['dz'].to_numpy(dtype=np.float64)
+                    valid = dz_arr > 1e-6
+                    safe_dz = np.where(valid, dz_arr, 1.0)
+                    t_arr = (lens_z - df['z'].to_numpy(dtype=np.float64)) / safe_dz
+                    x_lens = df['x'].to_numpy(dtype=np.float64) + df['dx'].to_numpy(dtype=np.float64) * t_arr
+                    y_lens = df['y'].to_numpy(dtype=np.float64) + df['dy'].to_numpy(dtype=np.float64) * t_arr
+                    keep_mask = valid & ((x_lens * x_lens + y_lens * y_lens) < epd_radius_mm * epd_radius_mm)
+                    if verbosity >= VerbosityLevel.BASIC:
+                        n_total = len(df)
+                        n_kept = int(keep_mask.sum())
+                        print(f"  f-number filter ({csv_file.name}): kept {n_kept}/{n_total} "
+                              f"({100*n_kept/max(n_total,1):.1f}%) within EPD {epd_radius_mm:.2f} mm")
+                else:
+                    keep_mask = np.ones(len(df), dtype=bool)
 
-                # Split rays into chunks
+                # Convert DataFrame to ray format, keeping only photons that
+                # pass the EPD filter. Track each ray's original df index so
+                # rejected rows resolve to NaN in _create_result_dataframe.
+                rays = []
+                ray_origin_indices = []
+                for orig_idx, (row, keep) in enumerate(zip(df.itertuples(), keep_mask)):
+                    if not keep:
+                        continue
+                    rays.append((
+                        np.array([row.x, row.y, row.z], dtype=np.float64),
+                        np.array([row.dx, row.dy, row.dz], dtype=np.float64),
+                        np.array([row.wavelength], dtype=np.float64),
+                    ))
+                    ray_origin_indices.append(orig_idx)
+
+                # Split rays into chunks. The index_chunks must carry the ORIGINAL
+                # df indices (not positions within the filtered rays list), so
+                # _align_chunk_results / _create_result_dataframe stay aligned.
                 chunks = self._chunk_rays(rays, chunk_size)
-                index_chunks = [list(range(i, min(i + chunk_size, len(rays)))) for i in range(0, len(rays), chunk_size)]
+                index_chunks = [ray_origin_indices[i:i + chunk_size] for i in range(0, len(rays), chunk_size)]
                 
                 rays = None  # Clear memory
 
