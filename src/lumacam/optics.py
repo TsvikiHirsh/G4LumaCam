@@ -106,6 +106,7 @@ class DetectorModel(IntEnum):
     IMAGE_INTENSIFIER_GAIN = 5 # Gain-dependent blob (RECOMMENDED for TPX3)
     TIMEPIX3_CALIBRATED = 6    # TPX3-specific calibration
     PHYSICAL_MCP = 7           # Full physics MCP simulation
+    GAUSSIAN_PROBABILISTIC = 8 # Stochastic Gaussian sampling (no threshold artifacts)
 
 def _process_ray_chunk_standalone(chunk, opm_file_path, wvl_values, verbosity=0,
                                   check_apertures=True):
@@ -2664,6 +2665,57 @@ class Lens:
 
         return covered_x, covered_y, activation_time, pixel_weights, afterpulse_events
 
+    def _apply_gaussian_probabilistic_model(self, cx, cy, photon_toa, sigma_pixels,
+                                             decay_time, model_params):
+        """
+        Probabilistic Gaussian blob: stochastically samples N secondary photon
+        positions from a 2D Gaussian centered at (cx, cy) and rounds each to a
+        pixel index. Pixels with one or more hits become activated; the hit
+        count per pixel becomes its weight (charge).
+
+        Why this exists:
+          The deterministic Gaussian models (GAUSSIAN_DIFFUSION,
+          IMAGE_INTENSIFIER_GAIN) paint every pixel whose Gaussian weight is
+          above a fixed 1% threshold. That threshold makes the pixel set a
+          discontinuous function of the sub-pixel photon position (cx, cy):
+          tiny shifts in (cx, cy) cause pixels to cross the threshold all at
+          once, which quantizes the reconstructed event centroid and produces
+          vertical-spike artifacts in residual plots like ev/Δx vs sim/z.
+
+          Sampling N positions stochastically removes the threshold cutoff.
+          The pixel pattern varies from photon to photon at the same (cx, cy);
+          centroids average to the true position with smooth statistics.
+
+        Parameters via model_params:
+          n_secondaries: int (default 30)
+              How many photons exit the intensifier per input photon.
+              Roughly: gain × QE_p43 ≈ 30 typical for TPX3 chains.
+        """
+        n_secondaries = int(model_params.get('n_secondaries', 30))
+
+        if sigma_pixels > 0:
+            sx = np.random.normal(cx, sigma_pixels, n_secondaries)
+            sy = np.random.normal(cy, sigma_pixels, n_secondaries)
+        else:
+            sx = np.full(n_secondaries, cx)
+            sy = np.full(n_secondaries, cy)
+
+        pix_x = np.floor(sx).astype(np.int64)
+        pix_y = np.floor(sy).astype(np.int64)
+
+        # Aggregate hits per pixel: unique pixels with hit-count weights.
+        pixels = np.stack([pix_x, pix_y], axis=1)
+        unique_pixels, counts = np.unique(pixels, axis=0, return_counts=True)
+        covered_x = unique_pixels[:, 0]
+        covered_y = unique_pixels[:, 1]
+        pixel_weights = counts.astype(np.float64)
+
+        # Per-pixel exponential phosphor delay (independent for each pixel)
+        activation_times = photon_toa + np.random.exponential(
+            decay_time, size=len(covered_x)
+        )
+        return covered_x, covered_y, activation_times, pixel_weights
+
     def _apply_image_intensifier_gain_model(self, cx, cy, photon_toa, blob, decay_time, model_params):
         """
         Gain-dependent image intensifier model with physics-based blob scaling.
@@ -3024,7 +3076,8 @@ class Lens:
                 'avalanche_gain': DetectorModel.AVALANCHE_GAIN,
                 'image_intensifier_gain': DetectorModel.IMAGE_INTENSIFIER_GAIN,
                 'timepix3_calibrated': DetectorModel.TIMEPIX3_CALIBRATED,
-                'physical_mcp': DetectorModel.PHYSICAL_MCP
+                'physical_mcp': DetectorModel.PHYSICAL_MCP,
+                'gaussian_probabilistic': DetectorModel.GAUSSIAN_PROBABILISTIC,
             }
             detector_model_lower = detector_model.lower()
             if detector_model_lower not in model_map:
@@ -3194,6 +3247,10 @@ class Lens:
                     gain = model_params.get('gain', 5000)
                     phosphor = model_params.get('phosphor_type', 'p43')
                     print(f"  Model: {model_name} - full physics MCP (gain={gain}, phosphor={phosphor}), deadtime {deadtime}ns")
+                elif detector_model == DetectorModel.GAUSSIAN_PROBABILISTIC:
+                    n_sec = int(model_params.get('n_secondaries', 30))
+                    print(f"  Model: {model_name} - stochastic Gaussian sampling (sigma={blob} px, "
+                          f"n_secondaries={n_sec}), deadtime {deadtime}ns — no threshold artifacts")
 
             # Collect afterpulses for AVALANCHE_GAIN model
             afterpulse_queue = []
@@ -3239,6 +3296,16 @@ class Lens:
 
                 elif detector_model == DetectorModel.IMAGE_INTENSIFIER_GAIN:
                     result = self._apply_image_intensifier_gain_model(cx, cy, photon_toa, blob, decay_time, model_params)
+                    if result is None:
+                        continue
+                    covered_x, covered_y, activation_time, pixel_weights = result
+
+                elif detector_model == DetectorModel.GAUSSIAN_PROBABILISTIC:
+                    # blob (cli) is reused as the Gaussian sigma in pixels;
+                    # n_secondaries comes from model_params (default 30).
+                    result = self._apply_gaussian_probabilistic_model(
+                        cx, cy, photon_toa, blob, decay_time, model_params
+                    )
                     if result is None:
                         continue
                     covered_x, covered_y, activation_time, pixel_weights = result
@@ -3482,6 +3549,14 @@ class Lens:
                 # Generic phosphor
                 tail_time = np.random.exponential(decay_time * 0.7)
             tot_measured = base_tot + tail_time
+
+        elif detector_model == DetectorModel.GAUSSIAN_PROBABILISTIC:
+            # TOT scales with hit count at this pixel (total_charge tracks
+            # secondary photon hits per pixel from the stochastic sampling).
+            total_charge = model_params.get('total_charge', 1.0)
+            tot_per_hit = model_params.get('tot_per_hit', 25.0)  # ns per secondary photon
+            tail = np.random.exponential(decay_time * 0.7)
+            tot_measured = base_tot + total_charge * tot_per_hit + tail
 
         else:
             # Fallback: add default tail
