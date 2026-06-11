@@ -50,6 +50,13 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Z-scan offset in mm.")
     optics.add_argument("--fnumber", type=float, default=None,
                         help="F-number override (default: use model value).")
+    optics.add_argument("--calibrate", action="store_true", default=False,
+                        help="Trace a virtual point-source grid through the lens "
+                             "(once per run, a few percent overhead) and write each "
+                             "photon's expected centroid pixel as x_opt/y_opt columns "
+                             "in TracedPhotons. After 'empindex --sim-merge' they "
+                             "appear as sim/x_opt, sim/y_opt; ev/x - sim/x_opt "
+                             "isolates reconstruction effects from lens optics.")
     optics.add_argument("--no-enforce-aperture", action="store_true", default=False,
                         help="Disable physical aperture enforcement during tracing. "
                              "Restores pre-fnumber-enforce-apertures behavior: no iris "
@@ -145,6 +152,7 @@ def trace_rays_main():
         detector_model=args.detector_model,
         model_params=model_params,
         simulate_ccw=args.simulate_ccw,
+        calibrate=args.calibrate,
         split_method=args.split_method,
         suffix=args.suffix,
         n_processes=args.n_processes,

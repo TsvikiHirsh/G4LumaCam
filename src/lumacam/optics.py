@@ -803,6 +803,7 @@ class Lens:
                     seed: int = None,
                     suffix: str = "",
                     simulate_ccw: bool = False,
+                    calibrate: bool = False,
                     verbosity=VerbosityLevel.BASIC,
                     **kwargs  # Additional model parameters passed as kwargs
                     ) -> Optional[pd.DataFrame]:
@@ -895,6 +896,13 @@ class Lens:
             TPX3 file splitting strategy (only used in "hits" workflow):
             - "auto": Groups neutron events to minimize file count (default)
             - "event": Creates one TPX3 file per neutron_id for event-by-event analysis
+        calibrate : bool, default False
+            Trace a virtual point-source grid through the refocused lens
+            (once per run, a few seconds) and write each photon's expected
+            centroid pixel as 'x_opt'/'y_opt' columns in TracedPhotons.
+            After `empindex --sim-merge` they appear as sim/x_opt, sim/y_opt;
+            ev/x - sim/x_opt isolates reconstruction effects from the lens
+            optics (magnification, depth defocus, field distortion).
         verbosity : VerbosityLevel, default VerbosityLevel.BASIC
             Controls output detail level:
             - QUIET (0): Only essential error messages
@@ -988,6 +996,7 @@ class Lens:
                 split_method=split_method,
                 suffix=suffix,
                 simulate_ccw=simulate_ccw,
+                calibrate=calibrate,
                 verbosity=verbosity,
                 **kwargs
             )
@@ -1017,12 +1026,138 @@ class Lens:
             split_method=split_method,
             suffix=suffix,
             simulate_ccw=simulate_ccw,
+            calibrate=calibrate,
             verbosity=verbosity,
             **kwargs
         )
 
 
+    # G4 EventProcessor optical-acceptance filter (see EventProcessor.cc):
+    # photons reach the SimPhotons CSV only if their birth ray projects
+    # inside this disc using t = LENS_Z/dz (z=0-referenced, no zscan).
+    _G4_EPD_RADIUS_MM = 30.53
+    _G4_EPD_LENS_Z_MM = 461.535
+
+    def _compute_xopt_map(self, opm_file_path, zscan, epd_radius_mm,
+                          wavelengths, r_max, z_min, z_max,
+                          n_r=8, n_z=9, n_rays=400, seed=12345,
+                          verbosity=VerbosityLevel.BASIC):
+        """
+        Trace a radial grid of virtual point sources through the traced
+        optical model and return the expected centroid pixel offset
+        off(r, z) from the optical axis, in continuous pixel units.
+
+        This is the optics-only reference for each photon's source point:
+        downstream, ev/x - sim/x_opt isolates reconstruction effects from
+        lens magnification, depth defocus and field distortion.
+
+        Conventions match the trace pipeline exactly:
+        - rays sampled uniformly over the f-number EPD disc at the lens
+          plane (dist_from_obj + zscan), additionally clipped by the G4
+          EventProcessor acceptance disc, like the real photons;
+        - per-ray wavelengths sampled from the traced CSV's spectrum;
+        - pixel = (x2*reduction_ratio + FOV/2)*256/FOV + 0.5, where +0.5 is
+          the mean offset of the ceil() in _create_result_dataframe;
+        - spot statistic is the median (robust center of the aberrated PSF).
+
+        By rotational symmetry the map is traced along +x only; callers
+        scale the offset by (x/r, y/r).
+        """
+        rng = np.random.default_rng(seed)
+        opt_model = open_model(opm_file_path)
+        wl_pool = np.round(np.asarray(wavelengths, dtype=float), 1)
+        wl_pool = wl_pool[np.isfinite(wl_pool)]
+        if wl_pool.size == 0:
+            wl_pool = np.array([430.0])
+        n_nodes = n_r * n_z
+        wls_all = rng.choice(wl_pool, size=n_nodes * n_rays)
+        opt_model.optical_spec.spectral_region = WvlSpec(
+            [(w, 1.0) for w in np.unique(wls_all)], ref_wl=1)
+
+        lens_z = self.dist_from_obj + zscan
+        aim_r = epd_radius_mm if epd_radius_mm is not None else self._G4_EPD_RADIUS_MM
+        r_grid = np.linspace(0.0, max(r_max, 1.0), n_r + 1)  # node 0 = axis
+        z_grid = np.linspace(z_min, z_max, n_z)
+        off = np.zeros((n_r + 1, n_z))
+        c_axis = (0.5 * self.FOV) * 256 / self.FOV + 0.5  # on-axis centroid pixel
+
+        k = 0
+        for ir in range(1, n_r + 1):           # off(0, z) = 0 by symmetry
+            r0 = r_grid[ir]
+            for iz, z0 in enumerate(z_grid):
+                rr = aim_r * np.sqrt(rng.uniform(0, 1, n_rays))
+                phi = rng.uniform(0, 2 * np.pi, n_rays)
+                dxv = rr * np.cos(phi) - r0
+                dyv = rr * np.sin(phi)
+                dzv = np.full(n_rays, lens_z - z0)
+                nrm = np.sqrt(dxv * dxv + dyv * dyv + dzv * dzv)
+                dx, dy, dz = dxv / nrm, dyv / nrm, dzv / nrm
+                # G4 acceptance cut, as applied to the real photons
+                tg4 = self._G4_EPD_LENS_Z_MM / dz
+                xg = r0 + dx * tg4
+                yg = dy * tg4
+                sel = (xg * xg + yg * yg) < self._G4_EPD_RADIUS_MM ** 2
+                wls = wls_all[k:k + n_rays]
+                k += n_rays
+                idx = np.where(sel)[0]
+                rays = [(np.array([r0, 0.0, z0]),
+                         np.array([dx[i], dy[i], dz[i]]),
+                         float(wls[i])) for i in idx]
+                x2 = []
+                if rays:
+                    res = analyses.trace_list_of_rays(
+                        opt_model, rays, output_filter="last",
+                        rayerr_filter="summary",
+                        check_apertures=self.enforce_aperture)
+                    for rres in res:
+                        if rres is None:
+                            continue
+                        try:
+                            xi = float(rres[0][0][0])
+                            if np.isfinite(xi):
+                                x2.append(xi)
+                        except Exception:
+                            pass
+                if len(x2) < max(10, n_rays // 20):
+                    off[ir, iz] = np.nan
+                    continue
+                c = (np.median(x2) * self.reduction_ratio
+                     + 0.5 * self.FOV) * 256 / self.FOV + 0.5
+                off[ir, iz] = c - c_axis
+        # Fill nodes that failed to trace (e.g. fully vignetted field edge)
+        for iz in range(n_z):
+            col = off[:, iz]
+            bad = np.isnan(col)
+            if bad.any() and (~bad).any():
+                col[bad] = np.interp(r_grid[bad], r_grid[~bad], col[~bad])
+        return {"r": r_grid, "z": z_grid, "off": off, "c_axis": c_axis}
+
+    @staticmethod
+    def _interp_xopt_map(xopt_map, x, y, z):
+        """Bilinear-interpolate the radial x_opt map at each photon's
+        source point. Returns (x_opt, y_opt) expected centroid pixels."""
+        r_g, z_g, off = xopt_map["r"], xopt_map["z"], xopt_map["off"]
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        z = np.asarray(z, dtype=float)
+        r = np.hypot(x, y)
+        rc = np.clip(r, r_g[0], r_g[-1])
+        zc = np.clip(z, z_g[0], z_g[-1])
+        ir = np.clip(np.searchsorted(r_g, rc) - 1, 0, len(r_g) - 2)
+        iz = np.clip(np.searchsorted(z_g, zc) - 1, 0, len(z_g) - 2)
+        wr = (rc - r_g[ir]) / (r_g[ir + 1] - r_g[ir])
+        wz = (zc - z_g[iz]) / (z_g[iz + 1] - z_g[iz])
+        o = (off[ir, iz] * (1 - wr) * (1 - wz)
+             + off[ir + 1, iz] * wr * (1 - wz)
+             + off[ir, iz + 1] * (1 - wr) * wz
+             + off[ir + 1, iz + 1] * wr * wz)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ux = np.where(r > 1e-9, x / r, 0.0)
+            uy = np.where(r > 1e-9, y / r, 0.0)
+        return xopt_map["c_axis"] + o * ux, xopt_map["c_axis"] + o * uy
+
     def _trace_rays_single(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
+                           calibrate=False,
                         source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100,
                         detector_model: Union[str, DetectorModel] = "image_intensifier_gain",
                         model_params: dict = None,
@@ -1164,6 +1299,9 @@ class Lens:
                     print(f"  EPD radius computation failed ({_e}); no fnumber filter applied")
             # ----------------------------------------------------------------
 
+            # Optics-calibration reference map (computed lazily on first file)
+            xopt_map = None
+
             # Progress bar for file processing
             file_desc = f"Processing {len(valid_files)} files"
             file_iter = tqdm(valid_files, desc=file_desc,
@@ -1212,6 +1350,42 @@ class Lens:
                 wvl = df["wavelength"].value_counts().to_frame().reset_index()
                 wvl["count"] = 1
                 wvl_values = wvl.values
+
+                # Optional optics-calibration reference (x_opt / y_opt):
+                # per-photon expected centroid pixel of its source point,
+                # interpolated from a once-per-run virtual point-source map.
+                x_opt_arr = y_opt_arr = None
+                if calibrate:
+                    if xopt_map is None:
+                        try:
+                            _z_all = df['z'].to_numpy(dtype=float)
+                            _zmin = float(np.nanmin(_z_all))
+                            _zmax = float(np.nanmax(_z_all))
+                            if not np.isfinite(_zmin) or (_zmax - _zmin) < 1.0:
+                                _zmin, _zmax = 0.0, 20.0
+                            _rmax = float(np.nanmax(np.hypot(
+                                df['x'].to_numpy(dtype=float),
+                                df['y'].to_numpy(dtype=float))))
+                            if not np.isfinite(_rmax) or _rmax <= 0:
+                                _rmax = 0.5 * self.FOV
+                            if verbosity >= VerbosityLevel.BASIC:
+                                print(f"  calibrate: tracing x_opt reference map "
+                                      f"(r <= {_rmax:.1f} mm, z in [{_zmin:.1f}, {_zmax:.1f}] mm)")
+                            xopt_map = self._compute_xopt_map(
+                                opm_file_path, zscan, epd_radius_mm,
+                                df['wavelength'].to_numpy(), _rmax, _zmin, _zmax,
+                                verbosity=verbosity)
+                        except Exception as _e:
+                            calibrate = False
+                            if verbosity > VerbosityLevel.QUIET:
+                                print(f"  calibrate: x_opt map failed ({_e}); "
+                                      f"continuing without calibration columns")
+                    if xopt_map is not None:
+                        x_opt_arr, y_opt_arr = self._interp_xopt_map(
+                            xopt_map,
+                            df['x'].to_numpy(dtype=float),
+                            df['y'].to_numpy(dtype=float),
+                            df['z'].to_numpy(dtype=float))
 
                 if verbosity >= VerbosityLevel.DETAILED:
                     print(f"  Rays to process: {len(df)}")
@@ -1320,6 +1494,11 @@ class Lens:
                 # Create result DataFrame from processed chunks
                 result_df = self._create_result_dataframe(results_with_indices, df, join, verbosity)
 
+                # Attach optics-calibration reference columns (1:1 with df rows)
+                if x_opt_arr is not None:
+                    result_df['x_opt'] = x_opt_arr
+                    result_df['y_opt'] = y_opt_arr
+
                 # Verify alignment by checking row count
                 if len(result_df) != len(df):
                     if verbosity > VerbosityLevel.QUIET:
@@ -1394,7 +1573,22 @@ class Lens:
                         
                         # Sort by time to restore chronological order
                         result_df = result_df.sort_values('toa2').reset_index(drop=True)
-                        
+
+                        # Re-attach calibration reference columns: saturation
+                        # rebuilds rows per pixel keeping the first photon's
+                        # identity, so map x_opt/y_opt through the same keys.
+                        if x_opt_arr is not None:
+                            _ref = pd.DataFrame({
+                                'id': df['id'].to_numpy(),
+                                'pulse_id': df['pulse_id'].to_numpy(),
+                                'neutron_id': df['neutron_id'].to_numpy(),
+                                'x_opt': x_opt_arr,
+                                'y_opt': y_opt_arr,
+                            }).drop_duplicates(subset=['id', 'pulse_id', 'neutron_id'])
+                            result_df = result_df.drop(
+                                columns=['x_opt', 'y_opt'], errors='ignore').merge(
+                                _ref, on=['id', 'pulse_id', 'neutron_id'], how='left')
+
                         # Remove temporary index column
                         if '_original_index' in result_df.columns:
                             result_df = result_df.drop(columns=['_original_index'])
@@ -1456,7 +1650,7 @@ class Lens:
                     desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'toa_tick',
                                     'photon_count', 'time_diff',
                                     'id', 'sim_id', 'neutron_id', 'pulse_id', 'pulse_time_ns',
-                                    'in_tpx3']
+                                    'in_tpx3', 'x_opt', 'y_opt']
                     if simulate_ccw:
                         desired_columns.append('coarse_clock_wrap')
 
@@ -1510,7 +1704,8 @@ class Lens:
                     
                     # Filter columns for photons workflow
                     desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'tof',
-                                    'id', 'sim_id', 'neutron_id', 'pulse_id', 'pulse_time_ns']
+                                    'id', 'sim_id', 'neutron_id', 'pulse_id', 'pulse_time_ns',
+                                    'x_opt', 'y_opt']
                     
                     columns_to_keep = [col for col in desired_columns if col in result_df.columns]
                     result_df = result_df[columns_to_keep]
@@ -1553,7 +1748,7 @@ class Lens:
                                      decay_time=100, seed: int = None, join=False, print_stats=False,
                                      n_processes=None, chunk_size=1000, progress_bar=True, timeout=3600,
                                      return_df=False, split_method="auto", suffix: str = "",
-                                     simulate_ccw: bool = False,
+                                     simulate_ccw: bool = False, calibrate: bool = False,
                                      verbosity=VerbosityLevel.BASIC, **kwargs) -> pd.DataFrame or None:
         """
         Internal method for detector model groupby.
@@ -1622,7 +1817,8 @@ class Lens:
                         seed=seed, join=join, print_stats=print_stats, n_processes=n_processes,
                         chunk_size=chunk_size, progress_bar=progress_bar, timeout=timeout,
                         return_df=return_df, split_method=split_method, suffix="",
-                        simulate_ccw=simulate_ccw, verbosity=verbosity, **config_copy
+                        simulate_ccw=simulate_ccw,
+                        calibrate=calibrate, verbosity=verbosity, **config_copy
                     )
 
                     if result is not None:
@@ -1638,6 +1834,7 @@ class Lens:
         return None
 
     def _trace_rays_grouped(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
+                            calibrate=False,
                             source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100,
                             detector_model: Union[str, DetectorModel] = "image_intensifier_gain",
                             model_params: dict = None,
@@ -1668,7 +1865,7 @@ class Lens:
                 decay_time=decay_time, seed=seed, join=join, print_stats=print_stats,
                 n_processes=n_processes, chunk_size=chunk_size, progress_bar=progress_bar,
                 timeout=timeout, return_df=return_df, split_method=split_method, suffix=suffix,
-                simulate_ccw=simulate_ccw, verbosity=verbosity, **kwargs
+                simulate_ccw=simulate_ccw, calibrate=calibrate, verbosity=verbosity, **kwargs
             )
 
         groupby_dir = self._groupby_dir
@@ -1752,6 +1949,7 @@ class Lens:
                         return_df=return_df,
                         split_method=split_method,
                         simulate_ccw=simulate_ccw,
+                        calibrate=calibrate,
                         verbosity=verbosity,
                         **kwargs
                     )
