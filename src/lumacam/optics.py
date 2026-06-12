@@ -2891,25 +2891,75 @@ class Lens:
         """
         n_secondaries = int(model_params.get('n_secondaries', 30))
 
+        # Intensifier afterpulsing, parameterized after the published
+        # characterization of intensified Tpx3Cam systems:
+        #   R. Mahon, D. Orlov, R. Glazenborg, A. Nomerotski, "Study of
+        #   afterpulsing in optical image intensifiers", arXiv:2304.12020.
+        # Two mechanisms, both producing satellite clusters that look like
+        # independent single photons (and therefore pass nPxMin cuts):
+        #  - electron phase: photoelectrons striking the MCP input web emit
+        #    5-10 secondary electrons; escapees re-avalanche within sub-ns,
+        #    displaced up to 2x the photocathode-MCP gap (0.2-0.4 mm =
+        #    3.6-7.3 px at 55 um), azimuthally symmetric.
+        #  - ion phase: ion feedback to the photocathode, delayed by up to
+        #    ~300 ns, slightly wider spatially.
+        # Published afterpulse probability: ~1.6% per photoelectron. When a
+        # traced photon represents N_pe photoelectrons of merged light,
+        # scale: ap_electron_prob ~ 0.016 * N_pe.
+        # Defaults 0 preserve old behavior.
+        ap_electron_prob = float(model_params.get('ap_electron_prob',
+                                 model_params.get('halo_satellites', 0.0)))
+        ap_electron_rmax = float(model_params.get('ap_electron_rmax',
+                                 model_params.get('halo_sigma', 5.5)))
+        ap_ion_prob = float(model_params.get('ap_ion_prob', 0.0))
+        ap_ion_rmax = float(model_params.get('ap_ion_rmax', 10.0))
+        ap_ion_tau = float(model_params.get('ap_ion_tau', 100.0))      # ns
+        ap_ion_tmax = float(model_params.get('ap_ion_tmax', 300.0))    # ns
+        ap_secondaries = int(model_params.get('ap_secondaries',
+                             model_params.get('halo_secondaries', 8)))
+
         if sigma_pixels > 0:
             sx = np.random.normal(cx, sigma_pixels, n_secondaries)
             sy = np.random.normal(cy, sigma_pixels, n_secondaries)
         else:
             sx = np.full(n_secondaries, cx)
             sy = np.full(n_secondaries, cy)
+        st = np.zeros(n_secondaries)   # emission-time offset per secondary (ns)
+
+        blob_sigma = sigma_pixels if sigma_pixels > 0 else 0.5
+        for prob, rmax, delayed in ((ap_electron_prob, ap_electron_rmax, False),
+                                    (ap_ion_prob, ap_ion_rmax, True)):
+            if prob <= 0 or rmax <= 0 or ap_secondaries <= 0:
+                continue
+            for _ in range(np.random.poisson(prob)):
+                # uniform disc displacement (Mahon et al.: extent to 2x gap)
+                r = rmax * np.sqrt(np.random.random())
+                phi = np.random.uniform(0, 2 * np.pi)
+                hx = cx + r * np.cos(phi)
+                hy = cy + r * np.sin(phi)
+                dt_ns = 0.0
+                if delayed:
+                    dt_ns = min(np.random.exponential(ap_ion_tau), ap_ion_tmax)
+                sx = np.concatenate([sx, np.random.normal(hx, blob_sigma, ap_secondaries)])
+                sy = np.concatenate([sy, np.random.normal(hy, blob_sigma, ap_secondaries)])
+                st = np.concatenate([st, np.full(ap_secondaries, dt_ns)])
 
         pix_x = np.floor(sx).astype(np.int64)
         pix_y = np.floor(sy).astype(np.int64)
 
         # Aggregate hits per pixel: unique pixels with hit-count weights.
+        # Pixel emission-time offset = earliest secondary feeding that pixel.
         pixels = np.stack([pix_x, pix_y], axis=1)
-        unique_pixels, counts = np.unique(pixels, axis=0, return_counts=True)
+        unique_pixels, inverse, counts = np.unique(
+            pixels, axis=0, return_inverse=True, return_counts=True)
         covered_x = unique_pixels[:, 0]
         covered_y = unique_pixels[:, 1]
         pixel_weights = counts.astype(np.float64)
+        t_offsets = np.full(len(covered_x), np.inf)
+        np.minimum.at(t_offsets, inverse, st)
 
         # Per-pixel exponential phosphor delay (independent for each pixel)
-        activation_times = photon_toa + np.random.exponential(
+        activation_times = photon_toa + t_offsets + np.random.exponential(
             decay_time, size=len(covered_x)
         )
         return covered_x, covered_y, activation_times, pixel_weights
