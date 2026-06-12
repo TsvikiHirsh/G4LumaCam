@@ -29,6 +29,11 @@ def _coerce(value: str):
     return value
 
 
+def build_parser() -> argparse.ArgumentParser:
+    """Public parser factory (used by empindex's contract tests)."""
+    return _build_parser()
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="lumacam-trace",
