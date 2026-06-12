@@ -2958,10 +2958,17 @@ class Lens:
         t_offsets = np.full(len(covered_x), np.inf)
         np.minimum.at(t_offsets, inverse, st)
 
-        # Per-pixel exponential phosphor delay (independent for each pixel)
-        activation_times = photon_toa + t_offsets + np.random.exponential(
-            decay_time, size=len(covered_x)
-        )
+        # Per-pixel phosphor delay (independent for each pixel).
+        # P47 has a finite rise time of ~7 ns in addition to its decay
+        # (Hogenbirk et al., "Intensified optical camera with Timepix4
+        # readout", JINST; P47 emission 390-490 nm, max 430 nm). Model the
+        # pulse as the convolution of two exponentials (hypoexponential):
+        # rise + decay. phosphor_rise=0 (default) preserves old behavior.
+        phosphor_rise = float(model_params.get('phosphor_rise', 0.0))
+        delays = np.random.exponential(decay_time, size=len(covered_x))
+        if phosphor_rise > 0:
+            delays += np.random.exponential(phosphor_rise, size=len(covered_x))
+        activation_times = photon_toa + t_offsets + delays
         return covered_x, covered_y, activation_times, pixel_weights
 
     def _apply_image_intensifier_gain_model(self, cx, cy, photon_toa, blob, decay_time, model_params):
