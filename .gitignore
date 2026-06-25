@@ -53,3 +53,11 @@ fnumber_investigation.md
 notebooks/read_merge_results.ipynb
 archive/point_source_test
 figures/
+notebooks/opt_h3_afterpulse
+notebooks/opt_h3_afterpulse_v2
+notebooks/opt_full24h
+notebooks/opt_*
+notebooks/logs
+notebooks/results
+notebooks/scripts
+notebooks/docs
