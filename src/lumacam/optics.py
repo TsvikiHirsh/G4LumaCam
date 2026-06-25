@@ -1332,6 +1332,19 @@ class Lens:
                         print(f"Skipping {csv_file.name}: missing columns {missing_cols}")
                     continue
 
+                # Optical-yield thinning: keep a random fraction of photons to
+                # model the effective light yield / detection efficiency. This is
+                # the continuous, optimizable replacement for the discrete
+                # thin0.5/thin0.7 SimPhotons archives — it controls photon
+                # pile-up, which sets cluster size (ph_n) and event multiplicity.
+                _keep = float((model_params or {}).get('photon_keep_fraction', 1.0))
+                if 0.0 < _keep < 1.0:
+                    _samp_seed = ((int(seed) if seed is not None else 0) * 100003
+                                  + file_idx) % (2 ** 31 - 1)
+                    df = df.sample(frac=_keep, random_state=_samp_seed).reset_index(drop=True)
+                    if df.empty:
+                        continue
+
                 # Check for pulse_id when split_method="event"
                 if source == "hits" and split_method == "event" and 'pulse_id' not in df.columns:
                     if verbosity > VerbosityLevel.BASIC:
@@ -2891,32 +2904,37 @@ class Lens:
         """
         n_secondaries = int(model_params.get('n_secondaries', 30))
 
-        # Intensifier afterpulsing, parameterized after the published
-        # characterization of intensified Tpx3Cam systems:
-        #   R. Mahon, D. Orlov, R. Glazenborg, A. Nomerotski, "Study of
-        #   afterpulsing in optical image intensifiers", arXiv:2304.12020.
-        # Two mechanisms, both producing satellite clusters that look like
-        # independent single photons (and therefore pass nPxMin cuts):
-        #  - electron phase: photoelectrons striking the MCP input web emit
-        #    5-10 secondary electrons; escapees re-avalanche within sub-ns,
-        #    displaced up to 2x the photocathode-MCP gap (0.2-0.4 mm =
-        #    3.6-7.3 px at 55 um), azimuthally symmetric.
-        #  - ion phase: ion feedback to the photocathode, delayed by up to
-        #    ~300 ns, slightly wider spatially.
-        # Published afterpulse probability: ~1.6% per photoelectron. When a
-        # traced photon represents N_pe photoelectrons of merged light,
-        # scale: ap_electron_prob ~ 0.016 * N_pe.
-        # Defaults 0 preserve old behavior.
-        ap_electron_prob = float(model_params.get('ap_electron_prob',
-                                 model_params.get('halo_satellites', 0.0)))
-        ap_electron_rmax = float(model_params.get('ap_electron_rmax',
-                                 model_params.get('halo_sigma', 5.5)))
-        ap_ion_prob = float(model_params.get('ap_ion_prob', 0.0))
-        ap_ion_rmax = float(model_params.get('ap_ion_rmax', 10.0))
-        ap_ion_tau = float(model_params.get('ap_ion_tau', 100.0))      # ns
-        ap_ion_tmax = float(model_params.get('ap_ion_tmax', 300.0))    # ns
-        ap_secondaries = int(model_params.get('ap_secondaries',
-                             model_params.get('halo_secondaries', 8)))
+        # Intensifier afterpulsing — single isotropic satellite component,
+        # parameterized after R. Mahon, D. Orlov, R. Glazenborg, A. Nomerotski,
+        # "Study of afterpulsing in optical image intensifiers", arXiv:2304.12020.
+        # Each traced photon spawns Poisson(ap_prob) satellite clusters at an
+        # isotropic azimuth, displaced by a uniform-disc radius up to ap_rmax
+        # (~2x the photocathode-MCP gap), each a mini-blob of ap_secondaries
+        # pixels so it survives nPxMin and reads out as an independent photon.
+        #
+        # Reduced from an earlier two-component (prompt "electron" + delayed
+        # "ion") form: an OAT sensitivity scan on PTB/air45 (notebooks/
+        # sensitivity_scan.py) showed the ion-branch rate was redundant with the
+        # electron rate, its only distinct effect (delayed pair-time) worsened
+        # the fit, and both displacement radii sat at the chi2 noise floor.  So
+        # the ion branch and its timing knobs (ap_ion_prob/_rmax/_tau/_tmax) were
+        # dropped.  Legacy ap_electron_*/halo_* names are accepted as aliases.
+        # Published afterpulse probability ~1.6% per photoelectron; for a traced
+        # photon representing N_pe merged photoelectrons, ap_prob ~ 0.016 * N_pe.
+        # Default 0 preserves the no-afterpulse behavior.
+        # The afterpulse rate ap_prob is the single free knob (legacy
+        # ap_electron_prob/halo_satellites accepted as aliases).  The satellite
+        # geometry is fixed to literature constants: an OAT sensitivity scan on
+        # PTB/air45 (notebooks/sensitivity_scan.py) showed both the displacement
+        # radius and the per-satellite pixel count were flat within the chi2
+        # noise floor, so they are NOT free parameters.
+        # Satellite geometry: literature defaults (5.5 px disc, 8 px mini-blob)
+        # but exposed as model_params so a parameter scan can move them.
+        AP_RMAX_PX = float(model_params.get('ap_rmax', 5.5))   # uniform-disc radius ~ 2x photocathode-MCP gap (px)
+        AP_SECONDARIES = int(model_params.get('ap_secondaries', 8))  # pixels per satellite mini-blob (survives nPxMin)
+        ap_prob = float(model_params.get('ap_prob',
+                        model_params.get('ap_electron_prob',
+                        model_params.get('halo_satellites', 0.0))))
 
         if sigma_pixels > 0:
             sx = np.random.normal(cx, sigma_pixels, n_secondaries)
@@ -2927,22 +2945,16 @@ class Lens:
         st = np.zeros(n_secondaries)   # emission-time offset per secondary (ns)
 
         blob_sigma = sigma_pixels if sigma_pixels > 0 else 0.5
-        for prob, rmax, delayed in ((ap_electron_prob, ap_electron_rmax, False),
-                                    (ap_ion_prob, ap_ion_rmax, True)):
-            if prob <= 0 or rmax <= 0 or ap_secondaries <= 0:
-                continue
-            for _ in range(np.random.poisson(prob)):
-                # uniform disc displacement (Mahon et al.: extent to 2x gap)
-                r = rmax * np.sqrt(np.random.random())
+        if ap_prob > 0:
+            for _ in range(np.random.poisson(ap_prob)):
+                # uniform-disc displacement (Mahon et al.: extent to 2x gap)
+                r = AP_RMAX_PX * np.sqrt(np.random.random())
                 phi = np.random.uniform(0, 2 * np.pi)
                 hx = cx + r * np.cos(phi)
                 hy = cy + r * np.sin(phi)
-                dt_ns = 0.0
-                if delayed:
-                    dt_ns = min(np.random.exponential(ap_ion_tau), ap_ion_tmax)
-                sx = np.concatenate([sx, np.random.normal(hx, blob_sigma, ap_secondaries)])
-                sy = np.concatenate([sy, np.random.normal(hy, blob_sigma, ap_secondaries)])
-                st = np.concatenate([st, np.full(ap_secondaries, dt_ns)])
+                sx = np.concatenate([sx, np.random.normal(hx, blob_sigma, AP_SECONDARIES)])
+                sy = np.concatenate([sy, np.random.normal(hy, blob_sigma, AP_SECONDARIES)])
+                st = np.concatenate([st, np.zeros(AP_SECONDARIES)])
 
         pix_x = np.floor(sx).astype(np.int64)
         pix_y = np.floor(sy).astype(np.int64)
@@ -2958,16 +2970,12 @@ class Lens:
         t_offsets = np.full(len(covered_x), np.inf)
         np.minimum.at(t_offsets, inverse, st)
 
-        # Per-pixel phosphor delay (independent for each pixel).
-        # P47 has a finite rise time of ~7 ns in addition to its decay
-        # (Hogenbirk et al., "Intensified optical camera with Timepix4
-        # readout", JINST; P47 emission 390-490 nm, max 430 nm). Model the
-        # pulse as the convolution of two exponentials (hypoexponential):
-        # rise + decay. phosphor_rise=0 (default) preserves old behavior.
-        phosphor_rise = float(model_params.get('phosphor_rise', 0.0))
+        # Per-pixel phosphor decay delay (P47), independent for each pixel.
+        # A finite emission rise time was tested and removed: an OAT scan on
+        # PTB/air45 showed a non-zero rise only broadened the intra-event
+        # pair-time distribution and worsened the match (chi2 best at rise=0),
+        # so the pulse is modeled by the decay exponential alone.
         delays = np.random.exponential(decay_time, size=len(covered_x))
-        if phosphor_rise > 0:
-            delays += np.random.exponential(phosphor_rise, size=len(covered_x))
         activation_times = photon_toa + t_offsets + delays
         return covered_x, covered_y, activation_times, pixel_weights
 
