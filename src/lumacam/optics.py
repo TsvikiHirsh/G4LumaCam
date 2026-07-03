@@ -2919,8 +2919,10 @@ class Lens:
         # the fit, and both displacement radii sat at the chi2 noise floor.  So
         # the ion branch and its timing knobs (ap_ion_prob/_rmax/_tau/_tmax) were
         # dropped.  Legacy ap_electron_*/halo_* names are accepted as aliases.
-        # Published afterpulse probability ~1.6% per photoelectron; for a traced
-        # photon representing N_pe merged photoelectrons, ap_prob ~ 0.016 * N_pe.
+        # Published afterpulsing affects ~1.6% of EVENTS (Mahon et al. 2023).
+        # ap_prob here is the per-photon Poisson rate; with ~1.2 clusters/event it
+        # maps roughly one-to-one to the event fraction (fitted ap_prob=0.012 ->
+        # ~2% of events show an afterpulse, consistent with the 1.6% literature).
         # Default 0 preserves the no-afterpulse behavior.
         # The afterpulse rate ap_prob is the single free knob (legacy
         # ap_electron_prob/halo_satellites accepted as aliases).  The satellite
@@ -2932,6 +2934,11 @@ class Lens:
         # but exposed as model_params so a parameter scan can move them.
         AP_RMAX_PX = float(model_params.get('ap_rmax', 5.5))   # uniform-disc radius ~ 2x photocathode-MCP gap (px)
         AP_SECONDARIES = int(model_params.get('ap_secondaries', 8))  # pixels per satellite mini-blob (survives nPxMin)
+        # Afterpulse emission delay (ns): the satellite is emitted AFTER the main
+        # pulse by the ion/electron feedback transit time, so its photon ToA is
+        # later. This lets position_mode="first" pick the parent. Default 0 keeps
+        # the prompt (no-delay) behaviour.
+        AP_DELAY_NS = float(model_params.get('ap_delay', 0.0))
         ap_prob = float(model_params.get('ap_prob',
                         model_params.get('ap_electron_prob',
                         model_params.get('halo_satellites', 0.0))))
@@ -2954,7 +2961,7 @@ class Lens:
                 hy = cy + r * np.sin(phi)
                 sx = np.concatenate([sx, np.random.normal(hx, blob_sigma, AP_SECONDARIES)])
                 sy = np.concatenate([sy, np.random.normal(hy, blob_sigma, AP_SECONDARIES)])
-                st = np.concatenate([st, np.zeros(AP_SECONDARIES)])
+                st = np.concatenate([st, np.full(AP_SECONDARIES, AP_DELAY_NS)])
 
         pix_x = np.floor(sx).astype(np.int64)
         pix_y = np.floor(sy).astype(np.int64)
