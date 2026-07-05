@@ -5,6 +5,47 @@ All notable changes to G4LumaCam will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-07-04
+
+### Changed
+- **`gaussian_probabilistic` is now the default detector model**, with all
+  defaults set to the values calibrated event-by-event against PTB fast-neutron
+  data (air45, Sigma-chi2 = 0.52 +/- 0.02 over four per-event observables x two
+  reconstruction modes):
+  - `blob` = 0.405 px (intensifier point-spread sigma)
+  - `decay_time` = 16.5 ns (P47 phosphor)
+  - `n_secondaries` = 9 (detected pixels per photon gain spot)
+  - `photon_keep_fraction` = 0.241 (effective optical yield ~ photocathode QE)
+  - `ap_prob` = 0.012, `ap_rmax` = 5.5 px, `ap_secondaries` = 8 (afterpulse
+    satellites at the literature rate, Mahon et al. 2024, NIM-A 1059 168816)
+  - `zfine` = 12.6 mm (calibrated fine focus)
+  These apply to both the Python API (`Lens.trace_rays()`) and the
+  `lumacam-trace` CLI; every value can still be overridden per call.
+  Set `ap_prob=0` to disable afterpulse satellites.
+
+### Added
+- **Afterpulse satellite component** in `gaussian_probabilistic`: each detected
+  photon spawns Poisson(`ap_prob`) satellite mini-clusters displaced
+  isotropically by a uniform-disc radius up to `ap_rmax` (~2x the
+  photocathode-MCP proximity gap), modeling photoelectron backscattering in
+  the MCP intensifier; optional `ap_delay` emission delay.
+- **`photon_keep_fraction`** continuous effective-optical-yield parameter in
+  the trace stage (replaces the discrete thinned-archive workflow).
+- **`config.empir_params`**: `BEST_DETECTOR_MODEL` dict with the calibrated
+  optimum, and `position_mode: "largest"` in the out-of-focus parameter set
+  (largest-cluster event positioning - robust against afterpulse satellites).
+- **Publication figure suite** (`notebooks/scripts/pubfigs/`) generating the
+  manuscript figures from the calibration archives.
+- **New notebook** `notebooks/calibrated_model_v06.ipynb`: the calibrated
+  model, the afterpulse mechanism, and the `empindex --params best` /
+  `--events2image` workflow.
+
+### Companion (empindex)
+- `empindex run` accepts built-in presets `best` / `best-inf` / `best-cog` /
+  `best-first` / `best-largest` (calibrated reconstruction + trace sections),
+  and a new `--events2image` flag writing TOF-resolved TIFF stacks
+  (`EventImages/stack.tif`, `sum.tif`, `tof_bins.csv`).
+
 ## [0.5.0] - 2025-12-30
 
 ### Added

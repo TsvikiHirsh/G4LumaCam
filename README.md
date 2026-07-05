@@ -14,9 +14,11 @@ G4LumaCam is a Geant4-based simulation package for the LumaCam event camera that
 
 - **High-Fidelity Physics**: Neutron interaction simulation based on Geant4 10.6 physics models
 - **Realistic Optics**: Accurate optical ray tracing through the LumaCam lens system
+- **Calibrated Detector Model (new in v0.6)**: the `gaussian_probabilistic` model is now the default, with parameters calibrated event-by-event against PTB fast-neutron data — intensifier point spread, P47 decay, pixels per photon, effective optical yield (~photocathode QE), and an intensifier-afterpulse satellite component (Mahon et al. 2024)
+- **Optical Truth Reference**: `calibrate=True` traces a virtual point-source grid and tags every photon with its ideal landing position (`sim/x_opt`), isolating detector/reconstruction effects from lens optics
 - **Advanced Detector Models**: 8 physics-based detector models including MCP+intensifier, Timepix3, and customizable phosphor screens (P20/P43/P46/P47)
 - **Standard Output Format**: Generates TPX3 files compatible with multiple reconstruction tools
-- **Flexible Reconstruction**: Use EMPIR for official workflow - just like in a real experiment!
+- **Flexible Reconstruction**: Use EMPIR for the official workflow, or the open-source `empindex` pipeline with built-in calibrated presets (`empindex run DATA --params best`)
 - **Configurable Sources**: Customizable neutron source properties (energy, spatial distribution, flux, etc.)
 - **Efficient Processing**: Multi-process support for large-scale simulations
 - **End-to-End Workflow**: From particle generation to reconstructed images
@@ -35,14 +37,15 @@ sim = lumacam.Simulate("openbeam")
 config = lumacam.Config.neutrons_uniform_energy()
 df = sim.run(config)
 
-# 2. Trace rays through the optical system with physics-based detector model
+# 2. Trace rays through the optical system.
+# As of v0.6 the defaults are the calibrated gaussian_probabilistic model
+# (blob sigma 0.405 px, P47 decay 16.5 ns, 9 px/photon, 24% effective
+# optical yield, afterpulse satellites at the literature rate), so no
+# arguments are needed:
 lens = lumacam.Lens(archive="openbeam")
-lens.trace_rays(
-    detector_model="image_intensifier_gain",  # Recommended: Gain-dependent MCP model
-    gain=5000,                                 # MCP gain (typical at 1000V)
-    decay_time=100,                            # P47 phosphor decay (~100ns)
-    deadtime=475                               # Timepix3 deadtime (475ns)
-)
+lens.trace_rays()
+# ...override any parameter as needed, e.g. disable afterpulse satellites:
+# lens.trace_rays(ap_prob=0)
 # This generates TPX3 files compatible with various reconstruction tools
 
 # 3. Reconstruct using EMPIR (requires EMPIR license)
@@ -124,9 +127,35 @@ analysis = lumacam.Analysis(
 ### 3. Default Path (Fallback)
 If neither is set, G4LumaCam falls back to `./empir` relative to the working directory.
 
+## The Calibrated Detector Model (v0.6)
+
+The default `gaussian_probabilistic` model was calibrated event-by-event against
+a two-second PTB fast-neutron open-beam measurement, by matching four per-event
+observables (pixels per photon cluster, photons per event, pixel--event position
+residual, photon time within the event) for two independent reconstruction modes
+simultaneously ($\Sigma\chi^2 = 0.52 \pm 0.02$):
+
+| parameter | value | meaning |
+|---|---|---|
+| `blob` | 0.405 px | intensifier point-spread (Gaussian sigma) |
+| `decay_time` | 16.5 ns | P47 phosphor decay |
+| `n_secondaries` | 9 | detected pixels per photon gain spot |
+| `photon_keep_fraction` | 0.241 | effective optical yield (~photocathode QE) |
+| `ap_prob` | 0.012 | afterpulse satellites per photon (~2% of events) |
+| `ap_rmax` / `ap_secondaries` | 5.5 px / 8 | satellite geometry (Mahon et al. 2024) |
+
+The afterpulse component models photoelectron backscattering in the MCP
+intensifier: each detected photon can spawn a small satellite cluster displaced
+isotropically by up to ~2x the photocathode--MCP gap. When reconstructing
+multi-photon events, use the largest-cluster event position
+(`photon2event.position_mode = "largest"`, the default in the bundled
+out-of-focus parameter set) to make the reconstruction robust against these
+satellites.
+
 ## Documentation
 
-- **[Tutorial Notebook](__notebooks/tutorial.ipynb__)**: Step-by-step guide with examples
+- **[Tutorial Notebook](notebooks/G4LumaCam_Tutorial.ipynb)**: Step-by-step guide with examples
+- **[Calibrated Model & Presets Notebook](notebooks/calibrated_model_v06.ipynb)**: The v0.6 calibrated detector model, afterpulse satellites, and the `empindex --params best` workflow
 - **[Detector Models Guide](.documents/DETECTOR_MODELS_SUMMARY.md)**: Quick reference for 8 available detector models
 - **[Full Detector Documentation](.documents/DETECTOR_MODELS.md)**: Complete documentation with physics background
 - **[Blob vs Gain Explained](.documents/BLOB_VS_GAIN.md)**: Understanding gain-dependent blob sizing

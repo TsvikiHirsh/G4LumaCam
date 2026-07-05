@@ -794,9 +794,9 @@ class Lens:
         return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
 
 
-    def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=12.75, fnumber=None,
-                    source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100,
-                    detector_model: Union[str, DetectorModel] = "image_intensifier_gain",
+    def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=12.6, fnumber=None,
+                    source=None, deadtime=None, blob=0.405, blob_variance=0.0, decay_time=16.5,
+                    detector_model: Union[str, DetectorModel] = "gaussian_probabilistic",
                     model_params: dict = None,
                     join=False, print_stats=False, n_processes=None, chunk_size=1000,
                     progress_bar=True, timeout=3600, return_df=False, split_method="auto",
@@ -2898,11 +2898,11 @@ class Lens:
           centroids average to the true position with smooth statistics.
 
         Parameters via model_params:
-          n_secondaries: int (default 30)
-              How many photons exit the intensifier per input photon.
-              Roughly: gain × QE_p43 ≈ 30 typical for TPX3 chains.
+          n_secondaries: int (default 9)
+              How many detected pixels the intensifier gain spot produces per
+              input photon (calibrated vs PTB per-event data; 9 +/- 2).
         """
-        n_secondaries = int(model_params.get('n_secondaries', 30))
+        n_secondaries = int(model_params.get('n_secondaries', 9))
 
         # Intensifier afterpulsing — single isotropic satellite component,
         # parameterized after R. Mahon, D. Orlov, R. Glazenborg, A. Nomerotski,
@@ -3336,6 +3336,17 @@ class Lens:
         # Kwargs take precedence over model_params
         model_params.update(kwargs)
 
+        # Calibrated defaults for the gaussian_probabilistic model (PTB air45
+        # per-event calibration, v0.6): applied only where the user did not
+        # supply a value. Set ap_prob=0 to disable afterpulse satellites.
+        if str(detector_model).lower().endswith('gaussian_probabilistic'):
+            for _k, _v in (('n_secondaries', 9),
+                           ('photon_keep_fraction', 0.241),
+                           ('ap_prob', 0.012),
+                           ('ap_rmax', 5.5),
+                           ('ap_secondaries', 8)):
+                model_params.setdefault(_k, _v)
+
         # Convert string to DetectorModel enum
         if isinstance(detector_model, str):
             model_map = {
@@ -3518,7 +3529,7 @@ class Lens:
                     phosphor = model_params.get('phosphor_type', 'p43')
                     print(f"  Model: {model_name} - full physics MCP (gain={gain}, phosphor={phosphor}), deadtime {deadtime}ns")
                 elif detector_model == DetectorModel.GAUSSIAN_PROBABILISTIC:
-                    n_sec = int(model_params.get('n_secondaries', 30))
+                    n_sec = int(model_params.get('n_secondaries', 9))
                     print(f"  Model: {model_name} - stochastic Gaussian sampling (sigma={blob} px, "
                           f"n_secondaries={n_sec}), deadtime {deadtime}ns — no threshold artifacts")
 

@@ -49,8 +49,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # --- optics ---
     optics = p.add_argument_group("optics")
-    optics.add_argument("--zfine", type=float, default=12.7,
-                        help="Lens fine-focus offset in mm.")
+    optics.add_argument("--zfine", type=float, default=12.6,
+                        help="Lens fine-focus offset in mm (calibrated, PTB 2024 setup).")
     optics.add_argument("--zscan", type=float, default=0.0,
                         help="Z-scan offset in mm.")
     optics.add_argument("--fnumber", type=float, default=None,
@@ -76,19 +76,23 @@ def _build_parser() -> argparse.ArgumentParser:
                           "'photons' exports directly. Auto-detected if omitted.")
     det.add_argument("--deadtime", type=float, default=600.0,
                      help="Pixel deadtime in ns.")
-    det.add_argument("--blob", type=float, default=1.0,
-                     help="Blob radius in pixels.")
+    det.add_argument("--blob", type=float, default=0.405,
+                     help="Intensifier point-spread (Gaussian sigma, pixels; "
+                          "calibrated vs PTB per-event data).")
     det.add_argument("--blob-variance", type=float, default=0.0,
-                     help="Blob radius variance.")
-    det.add_argument("--decay-time", type=float, default=30.0,
-                     help="Scintillator decay time in ns.")
+                     help="Blob radius variance (unused by gaussian_probabilistic).")
+    det.add_argument("--decay-time", type=float, default=16.5,
+                     help="Phosphor decay time in ns (calibrated, P47).")
     det.add_argument("--gain", type=float, default=10000.0,
                      help="Detector gain.")
-    det.add_argument("--detector-model", type=str, default="image_intensifier_gain",
+    det.add_argument("--detector-model", type=str, default="gaussian_probabilistic",
                      help="Detector model name.")
     det.add_argument("--param", metavar="KEY=VALUE", action="append", default=[],
                      help="Extra model parameter (repeatable). "
-                          "Example: --param noise=0.05")
+                          "Example: --param ap_prob=0. For gaussian_probabilistic "
+                          "the calibrated defaults are n_secondaries=9, "
+                          "photon_keep_fraction=0.241 (effective optical yield), "
+                          "ap_prob=0.012, ap_rmax=5.5, ap_secondaries=8.")
 
     # --- CCW simulation ---
     p.add_argument("--simulate-ccw", action="store_true", default=False,
@@ -130,8 +134,18 @@ def trace_rays_main():
     parser = _build_parser()
     args = parser.parse_args()
 
-    # Parse --param KEY=VALUE pairs into a dict; seed with --gain default
+    # Parse --param KEY=VALUE pairs into a dict; seed with --gain default.
+    # For the (default) gaussian_probabilistic model, seed the calibrated
+    # optimum (PTB air45 per-event calibration); any --param overrides it.
     model_params = {"gain": args.gain}
+    if args.detector_model == "gaussian_probabilistic":
+        model_params.update({
+            "n_secondaries": 9,
+            "photon_keep_fraction": 0.241,   # effective optical yield (~QE)
+            "ap_prob": 0.012,                # afterpulse rate (Mahon et al. 2024)
+            "ap_rmax": 5.5,
+            "ap_secondaries": 8,
+        })
     for kv in args.param:
         if "=" not in kv:
             parser.error(f"--param must be in KEY=VALUE format, got: {kv!r}")

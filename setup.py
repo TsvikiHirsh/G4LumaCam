@@ -68,7 +68,7 @@ class CustomInstall(install):
 
 setup(
     name="G4LumaCam",
-    version="0.5.0",
+    version="0.6.0",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     package_data={
