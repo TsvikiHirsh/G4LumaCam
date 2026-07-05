@@ -109,17 +109,17 @@ grid[grid < 3] = 0                                 # threshold: discrete pixels
 b.imshow(grid, origin='lower', extent=[-ext, ext, -ext, ext],
          cmap='Greys', vmax=grid.max() * 1.15, interpolation='nearest')
 
-# positions: truth (= parent centre), pulled centroid, largest cluster
-yy, xx = np.mgrid[-ext:ext, -ext:ext]
-xx, yy = xx + 0.5, yy + 0.5
-w = grid.sum()
-cog = (float((grid * xx).sum() / w), float((grid * yy).sum() / w))
-b.plot(0, 0, 'o', mfc='none', mec=OPT, mew=1.8, ms=11, label='true position')
-b.plot(*cog, 'X', color=SIM, ms=9, label='event centroid')
-b.plot(0, 0, '+', color='k', ms=12, mew=1.8, label='largest cluster')
-b.add_patch(FancyArrowPatch((0.4, 0.25), (cog[0] - 0.25, cog[1] - 0.15),
-                            arrowstyle='-|>', mutation_scale=10, color=SIM,
-                            lw=1.2))
+# positions: truth (= parent centre), pulled centroid, largest cluster.
+# The event centroid is the unweighted mean of the photon-cluster positions
+# (photon2event "cog"), i.e. midway between parent and satellite for a
+# two-cluster event.
+cog = (d_sat[0] / 2, d_sat[1] / 2)
+b.plot(0, 0, 'o', mfc='none', mec=OPT, mew=1.6, ms=11, label='true position')
+b.plot(*cog, 'x', color=SIM, ms=9, mew=1.6, label='event centroid')
+b.plot(0, 0, '+', color='k', ms=12, mew=1.6, label='largest cluster')
+b.add_patch(FancyArrowPatch((0.45, 0.30), (cog[0] - 0.30, cog[1] - 0.20),
+                            arrowstyle='-|>', mutation_scale=9, color=SIM,
+                            lw=1.0, alpha=0.8))
 b.text(d_sat[0] + 0.3, d_sat[1] + 1.6, 'satellite', fontsize=7.5, ha='center',
        color=SIM)
 b.text(-0.2, -2.6, 'parent', fontsize=7.5, ha='center')

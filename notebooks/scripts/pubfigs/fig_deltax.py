@@ -37,12 +37,13 @@ pix = df.dropna(subset=['px/x', 'sim/x_opt', 'ev/id'])
 pix = pix[pix['ev/id'].isin(m.index)]
 dx_pix = pix['px/x'] - pix['sim/x_opt']
 
-SERIES = [(dx_pix, '0.45', 'raw pixels (hitmap)'),
-          (m.cogx - m.ox, SIM, 'event centroid'),
-          (m.fx - m.ox, OPT, 'first photon'),
-          (m.lx - m.ox, EXP, 'largest cluster')]
+P2MM = 0.464          # object-space mm per detector pixel
+SERIES = [(dx_pix * P2MM, '0.45', 'raw pixels (hitmap)'),
+          ((m.cogx - m.ox) * P2MM, SIM, 'event centroid'),
+          ((m.fx - m.ox) * P2MM, OPT, 'first photon'),
+          ((m.lx - m.ox) * P2MM, EXP, 'largest cluster')]
 
-bins = np.linspace(-9, 9, 37)
+bins = np.linspace(-3.5, 3.5, 36)
 fig, ax = plt.subplots(figsize=(4.6, 3.4))
 for d, colr, lab in SERIES:
     h, e = np.histogram(d, bins=bins, density=True)
@@ -50,17 +51,11 @@ for d, colr, lab in SERIES:
         ax.stairs(h, e, color=colr, fill=True, alpha=0.35, label=lab)
     else:
         ax.stairs(h, e, color=colr, lw=1.6, label=lab)
-ax.set_yscale('log')
-ax.set_ylim(1e-3, 3)
-ax.set_xlim(-9, 9)
-ax.set_xlabel(r'$\Delta x$ = reconstructed $-$ true position (px)')
-ax.set_ylabel('probability density')
+ax.set_xlim(-3.5, 3.5)
+ax.set_ylim(bottom=0)
+ax.set_xlabel(r'$\Delta x$ = reconstructed $-$ true position (mm)')
+ax.set_ylabel('probability density (mm$^{-1}$)')
 ax.legend(loc='upper left', fontsize=7.5)
-P2MM = 0.464
-ax.tick_params(top=False)
-sx = ax.secondary_xaxis('top', functions=(lambda p: p * P2MM,
-                                          lambda mm: mm / P2MM))
-sx.set_xlabel(r'$\Delta x$ (mm)', fontsize=8)
 
 fig.tight_layout()
 save(fig, 'deltax_modes')

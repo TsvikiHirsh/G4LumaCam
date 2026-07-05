@@ -67,59 +67,54 @@ def binned(x, d, edges):
     return np.array(ctr), np.array(val), np.array(err)
 
 
+FWHM = 2.3548 * P2MM   # sigma (px) -> FWHM (mm)
+
 fig, (a, b, c) = plt.subplots(1, 3, figsize=(9.8, 2.9))
 
 # (a) resolution vs interaction depth
 edges = np.linspace(0, 20, 8)
 for col, colr, lab, mk in MODES:
     x, v, e = binned(m.pz, m[col] - m.ox, edges)
-    a.errorbar(x, v, yerr=e, color=colr, marker=mk, ms=4, lw=1.4, capsize=2,
-               label=lab)
+    a.errorbar(x, v * FWHM, yerr=e * FWHM, color=colr, marker=mk, ms=4,
+               lw=1.4, capsize=2, label=lab)
 a.set_xlabel('interaction depth in scintillator (mm)')
-a.set_ylabel(r'position error $\sigma$ (px)')
-a.set_ylim(0, 2.4)
+a.set_ylabel('position resolution FWHM (mm)')
+a.set_ylim(0, 2.7)
 a.set_xlim(0, 20)
-a.legend(loc='upper left', bbox_to_anchor=(0.03, 0.88), fontsize=7.5)
-a.tick_params(right=False)
-sa = a.secondary_yaxis('right', functions=(lambda p: p * P2MM,
-                                           lambda mm: mm / P2MM))
-sa.set_ylabel(r'$\sigma$ (mm)', fontsize=8)
+a.legend(loc='center left', bbox_to_anchor=(0.02, 0.55), fontsize=7.5)
 panel_label(a, '(a)')
 
 # (b) resolution vs neutron energy
 edges = np.array([1, 3, 5, 7, 9, 10])
 for col, colr, lab, mk in MODES:
     x, v, e = binned(m.En, m[col] - m.ox, edges)
-    b.errorbar(x, v, yerr=e, color=colr, marker=mk, ms=4, lw=1.4, capsize=2,
-               label=lab)
+    b.errorbar(x, v * FWHM, yerr=e * FWHM, color=colr, marker=mk, ms=4,
+               lw=1.4, capsize=2, label=lab)
 b.set_xlabel('neutron energy (MeV)')
-b.set_ylabel(r'position error $\sigma$ (px)')
-b.set_ylim(0, 2.4)
+b.set_ylabel('position resolution FWHM (mm)')
+b.set_ylim(0, 2.7)
 b.set_xlim(0, 10.5)
-b.legend(loc='upper left', bbox_to_anchor=(0.03, 0.88), fontsize=7.5)
-b.tick_params(right=False)
-sb = b.secondary_yaxis('right', functions=(lambda p: p * P2MM,
-                                           lambda mm: mm / P2MM))
-sb.set_ylabel(r'$\sigma$ (mm)', fontsize=8)
+b.legend(loc='lower center', bbox_to_anchor=(0.55, 0.02), fontsize=7.5)
 panel_label(b, '(b)')
 
-# (c) mean photon multiplicity by parent particle (all events)
-PARENTS = [('proton', 'recoil\nproton'),
-           ('e-', 'electron\n($\\gamma$-induced)'),
-           ('C12', 'carbon\nrecoil')]
-means, sems = [], []
-for par, _ in PARENTS:
-    d = ev[ev.par == par]['n']
-    means.append(d.mean())
-    sems.append(d.std() / np.sqrt(len(d)))
-c.bar(range(3), means, yerr=sems, width=0.62, color=EXP, alpha=0.85,
-      capsize=3, error_kw={'lw': 1})
-for i, v in enumerate(means):
-    c.text(i, v + sems[i] + 0.05, f'{v:.2f}', ha='center', fontsize=8.5)
-c.set_xticks(range(3))
-c.set_xticklabels([lab for _, lab in PARENTS], fontsize=8)
-c.set_ylabel('mean photons per event')
-c.set_ylim(0, 2.3)
+# (c) photon-multiplicity distribution by parent particle (grouped bars)
+PARENTS = [('proton', EXP, 'recoil proton'),
+           ('e-', SIM, r'electron ($\gamma$-induced)'),
+           ('C12', OPT, 'carbon recoil')]
+nmax = 4
+xs = np.arange(1, nmax + 1)
+width = 0.26
+for j, (par, colr, lab) in enumerate(PARENTS):
+    d = ev[ev.par == par]['n'].clip(upper=nmax)
+    frac = np.array([(d == k).mean() for k in xs])
+    c.bar(xs + (j - 1) * width, frac, width=width * 0.92, color=colr,
+          alpha=0.88, label=lab)
+c.set_xticks(xs)
+c.set_xticklabels(['1', '2', '3', r'$\geq$4'])
+c.set_xlabel('photons per event')
+c.set_ylabel('fraction of events')
+c.set_ylim(0, 0.95)
+c.legend(loc='upper right', fontsize=7.5)
 panel_label(c, '(c)')
 
 fig.tight_layout(w_pad=1.8)
