@@ -69,8 +69,23 @@ a.text(XPH1 + 0.25, YP, 'parent cluster', fontsize=7.5, va='center', color=EXP)
 a.add_patch(FancyArrowPatch((XM0, YP + 0.15), (XM0, YS), arrowstyle='-|>',
                             mutation_scale=9, color=SIM, lw=1.5, ls=(0, (4, 2)),
                             connectionstyle='arc3,rad=0.65'))
-a.text(2.18, (YP + YS) / 2 + 0.9, 'backscattered\ne$^-$', fontsize=7.5,
+a.text(2.14, (YP + YS) / 2 + 1.15, 'backscattered\ne$^-$', fontsize=7.5,
        color=SIM, ha='center')
+
+# alternative: ion recoil from the MCP input surface to the photocathode,
+# releasing an electron that re-enters the MCP displaced (same satellite).
+# Routed below the main e- path, entering/leaving the MCP near its own beam
+# height so the label sits in open space.
+ION = '#8C7A00'
+YI = YP - 1.55
+a.add_patch(FancyArrowPatch((XM0, YP - 0.10), (XPC1, YI),
+                            arrowstyle='-|>', mutation_scale=8, color=ION,
+                            lw=1.1, ls=(0, (1.5, 1.5))))
+a.add_patch(FancyArrowPatch((XPC1, YI), (XM0, YS - 0.08),
+                            arrowstyle='-|>', mutation_scale=8, color=ION,
+                            lw=1.1, connectionstyle='arc3,rad=-0.35'))
+a.text(XPC1 + 0.10, YI - 0.05, 'ion', fontsize=7.5, color=ION, ha='left',
+       va='center')
 
 # satellite avalanche
 a.fill([XM0, XM1, XM1, XM0], [YS - 0.05, YS - 0.30, YS + 0.30, YS + 0.05],

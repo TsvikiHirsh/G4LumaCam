@@ -73,7 +73,7 @@ b.plot(ctr, d_det, 's-', color=SIM, ms=4,
        label='simulation, optics + afterpulsing')
 b.plot(ctr, d_opt, '^-', color=OPT, ms=4, label='simulation, optical truth')
 b.axhline(SAT_MM, color='k', ls='--', lw=1.4)
-b.text(10.0, SAT_MM - 0.09, 'experiment (open beam)', fontsize=8,
+b.text(10.0, SAT_MM - 0.09, 'observed satellite displacement', fontsize=8,
        ha='center', va='top')
 b.set_xlabel('interaction depth in scintillator (mm)')
 b.set_ylabel('in-event cluster separation (mm)')
