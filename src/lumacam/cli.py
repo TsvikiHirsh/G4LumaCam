@@ -92,7 +92,8 @@ def _build_parser() -> argparse.ArgumentParser:
                           "Example: --param ap_prob=0. For gaussian_probabilistic "
                           "the calibrated defaults are n_secondaries=9, "
                           "photon_keep_fraction=0.241 (effective optical yield), "
-                          "ap_prob=0.012, ap_rmax=5.5, ap_secondaries=8.")
+                          "ap_prob=0.012, ap_rmax=5.5, ap_secondaries=8, "
+                          "ap_delay=8 (measured satellite emission delay, ns).")
 
     # --- CCW simulation ---
     p.add_argument("--simulate-ccw", action="store_true", default=False,

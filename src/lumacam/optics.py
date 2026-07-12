@@ -2936,9 +2936,12 @@ class Lens:
         AP_SECONDARIES = int(model_params.get('ap_secondaries', 8))  # pixels per satellite mini-blob (survives nPxMin)
         # Afterpulse emission delay (ns): the satellite is emitted AFTER the main
         # pulse by the ion/electron feedback transit time, so its photon ToA is
-        # later. This lets position_mode="first" pick the parent. Default 0 keeps
-        # the prompt (no-delay) behaviour.
-        AP_DELAY_NS = float(model_params.get('ap_delay', 0.0))
+        # later. This lets position_mode="first" pick the parent. Default 8 ns:
+        # the median satellite delay measured on the PTB air45 event lists
+        # (satellite-like two-photon pairs), consistent with an ion transit
+        # across the ~1.3 mm photocathode-MCP proximity gap. Set 0 for the
+        # legacy prompt behaviour.
+        AP_DELAY_NS = float(model_params.get('ap_delay', 8.0))
         ap_prob = float(model_params.get('ap_prob',
                         model_params.get('ap_electron_prob',
                         model_params.get('halo_satellites', 0.0))))
