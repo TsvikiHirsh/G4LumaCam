@@ -25,6 +25,8 @@ void EventProcessor::resetData() {
     photons.clear();
     tracks.clear();
     neutronPos[0] = neutronPos[1] = neutronPos[2] = 0.;
+    neutronEntry[0] = neutronEntry[1] = neutronEntry[2] = 0.;
+    neutronEntered = false;
     neutronEnergy = 0.;
     protonEnergy = 0.;
     neutronRecorded = false;
@@ -73,6 +75,16 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             neutronEnergy = 0.0;
             neutronPos[0] = neutronPos[1] = neutronPos[2] = 0.;
         }
+    }
+
+    // Neutron entry point: start of the primary neutron's first step in the
+    // scintillator, i.e. where it crossed the surface (before any interaction
+    // in it). Unlike neutronPos below, never overwritten within the event.
+    if (!neutronEntered && volName == "ScintPhys" && parentID == 0 && particleName == "neutron") {
+        neutronEntry[0] = prePos.x();
+        neutronEntry[1] = prePos.y();
+        neutronEntry[2] = prePos.z();
+        neutronEntered = true;
     }
 
     // Record neutron position in ScintPhys or SamplePhys.
@@ -206,6 +218,9 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             rec.nx = neutronPos[0] / mm;
             rec.ny = neutronPos[1] / mm;
             rec.nz = neutronPos[2] / mm;
+            rec.nx0 = neutronEntry[0] / mm;
+            rec.ny0 = neutronEntry[1] / mm;
+            rec.nz0 = neutronEntry[2] / mm;
             rec.neutronEnergy = neutronEnergy;
             rec.pulseId = particleGen ? particleGen->getCurrentPulseIndex() : -1;
             rec.pulseTime = currentEventTriggerTime;
@@ -282,7 +297,7 @@ void EventProcessor::openOutputFile() {
              << "x,y,z,dx,dy,dz,"   // photon birth pos+dir (Python traces from here)
              << "toa,wavelength,"
              << "parentName,px,py,pz,parentEnergy,"  // px/py/pz = parent birth pos
-             << "nx,ny,nz,neutronEnergy\n";
+             << "nx,ny,nz,neutronEnergy,nx0,ny0,nz0\n";
 }
 
 void EventProcessor::writeData() {
@@ -316,7 +331,8 @@ void EventProcessor::writeData() {
         dataFile << std::setprecision(4)
                  << p.nx << "," << p.ny << "," << p.nz << ",";
 
-        dataFile << std::setprecision(4) << p.neutronEnergy << "\n";
+        dataFile << std::setprecision(4) << p.neutronEnergy << ","
+                 << p.nx0 << "," << p.ny0 << "," << p.nz0 << "\n";
     }
     dataFile.flush();
 }

@@ -24,7 +24,8 @@ private:
         G4double wavelength, parentEnergy, neutronEnergy;
         G4String parentType;
         G4double px, py, pz;  // parent birth position
-        G4double nx, ny, nz;  // neutron first interaction point
+        G4double nx, ny, nz;  // neutron: last interaction in the scintillator or sample
+        G4double nx0, ny0, nz0;  // neutron: entry point into the scintillator
         G4int pulseId;
         G4double pulseTime;
     };
@@ -40,6 +41,8 @@ private:
     std::vector<PhotonRecord> photons;
     std::map<G4int, TrackData> tracks;
     G4double neutronPos[3], neutronEnergy, protonEnergy;
+    G4double neutronEntry[3];  // where the primary neutron entered the scintillator
+    G4bool neutronEntered;
     G4int neutronCount, batchCount, eventCount;
     std::ofstream dataFile;
     ParticleGenerator* particleGen;
