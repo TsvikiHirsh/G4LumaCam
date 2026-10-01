@@ -59,6 +59,12 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
         .SetParameterName("width", false)
         .SetDefaultValue("12.0");
 
+    // Sample distance
+    messenger->DeclareMethod("sampleDistance", &LumaCamMessenger::SetSampleDistance)
+        .SetGuidance("Distance in cm from the scintillator front face to the sample's downstream face "
+                     "(default: the sample sits right in front of the detector)")
+        .SetParameterName("distance", false);
+
     // Batch size
     messenger->DeclareMethod("batchSize", &LumaCamMessenger::SetBatchSize)
         .SetGuidance("Set the number of events per CSV file (0 for single file)")
@@ -229,6 +235,19 @@ void LumaCamMessenger::SetSampleWidth(G4double width) {
     if (geom && sampleLog) {
         G4Material* material = sampleLog->GetMaterial();
         geom->UpdateSampleGeometry(Sim::SAMPLE_THICKNESS, material, Sim::SAMPLE_WIDTH);
+        G4RunManager::GetRunManager()->GeometryHasBeenModified();
+    } else {
+        G4cerr << "ERROR: Failed to cast to GeometryConstructor or sampleLog is nullptr!" << G4endl;
+    }
+}
+
+void LumaCamMessenger::SetSampleDistance(G4double distance) {
+    Sim::SetSampleGap(distance * cm);
+    GeometryConstructor* geom = dynamic_cast<GeometryConstructor*>(
+        const_cast<G4VUserDetectorConstruction*>(
+            G4RunManager::GetRunManager()->GetUserDetectorConstruction()));
+    if (geom && sampleLog) {
+        geom->UpdateSampleGeometry(Sim::SAMPLE_THICKNESS, sampleLog->GetMaterial(), Sim::SAMPLE_WIDTH);
         G4RunManager::GetRunManager()->GeometryHasBeenModified();
     } else {
         G4cerr << "ERROR: Failed to cast to GeometryConstructor or sampleLog is nullptr!" << G4endl;

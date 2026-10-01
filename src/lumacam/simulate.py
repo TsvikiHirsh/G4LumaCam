@@ -62,6 +62,7 @@ class Config:
     scintillator: str = "EJ200"  # Scintillator type: PVT, EJ-200, GS20
     sample_thickness: float = 0.2  # Sample thickness in cm (default 0.2 cm = 200 microns)
     sample_width: float = 12.0  # Sample width in cm (default 12 cm)  
+    sample_distance: Optional[float] = None  # cm, scintillator front face to sample; None: right in front
     scintillator_thickness: float = 20  # Scintillator thickness in mm (default is 20 mm)
     csv_batch_size: int = 0
     # Ion parameters for radioactive decay
@@ -406,6 +407,7 @@ class Config:
 /lumacam/sampleWidth {self.sample_width} cm
 /lumacam/scintThickness {self.scintillator_thickness} cm
 /lumacam/sampleMaterial {self.sample_material}
+{f"/lumacam/sampleDistance {self.sample_distance} cm" if self.sample_distance is not None else ""}
 /lumacam/batchSize {self.csv_batch_size}
 /control/verbose 2
 /run/beamOn {int(self.num_events)}

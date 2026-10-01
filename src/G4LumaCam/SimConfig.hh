@@ -15,6 +15,7 @@ namespace Sim {
     extern G4double SAMPLE_THICKNESS;
     extern G4double SCINT_SIZE;
     extern G4double SAMPLE_WIDTH; // Full width
+    extern G4double SAMPLE_GAP;   // scintillator front face to sample downstream face; < 0: legacy placement
     extern G4double COATING_THICKNESS;
     static G4String sampleMaterial = "G4_GRAPHITE";
     static G4String scintillatorMaterial = "ScintillatorPVT";
@@ -28,6 +29,8 @@ namespace Sim {
     void SetScintThickness(G4double thickness);
     void SetSampleThickness(G4double thickness);
     void SetSampleWidth(G4double width);
+    void SetSampleGap(G4double gap);
+    G4double SampleCenterZ(G4double scintThickness, G4double sampleThickness);
     void ComputePulseStructure(G4int totalNeutrons); // Compute pulse times and neutrons per pulse
 }
 

@@ -14,6 +14,7 @@ namespace Sim {
     G4double SAMPLE_THICKNESS = 7.5 * cm;
     G4double SCINT_SIZE = 12.0 * cm;
     G4double SAMPLE_WIDTH = 12.0 * cm; // Full width
+    G4double SAMPLE_GAP = -1.0;        // < 0: legacy placement (see SampleCenterZ)
     G4double COATING_THICKNESS = 0.01 * cm;
     G4double TMIN = 0.0 * ns;
     G4double TMAX = 0.0 * ns;
@@ -47,6 +48,24 @@ namespace Sim {
         } else {
             G4cerr << "ERROR: Sample width must be positive!" << G4endl;
         }
+    }
+
+    // The sample sits in the world volume, upstream of the L-shape detector volume,
+    // which starts 0.5 cm in front of the scintillator, so the gap must be >= 0.5 cm.
+    void SetSampleGap(G4double gap) {
+        if (gap >= 0.5 * cm) {
+            SAMPLE_GAP = gap;
+            G4cout << "Sample distance (scintillator front face to sample) set to: " << gap / cm << " cm" << G4endl;
+        } else {
+            G4cerr << "ERROR: Sample distance must be at least 0.5 cm!" << G4endl;
+        }
+    }
+
+    // z of the sample centre. The scintillator front face is at z = 0. Legacy
+    // placement (no sampleDistance given): downstream face at -(scint + coating).
+    G4double SampleCenterZ(G4double scintThickness, G4double sampleThickness) {
+        if (SAMPLE_GAP < 0) return -scintThickness - COATING_THICKNESS - sampleThickness / 2;
+        return -SAMPLE_GAP - sampleThickness / 2;
     }
 
     void ComputePulseStructure(G4int totalNeutrons) {

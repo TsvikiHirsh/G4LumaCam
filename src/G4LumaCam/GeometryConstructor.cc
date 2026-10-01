@@ -65,7 +65,7 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
     G4VisAttributes* sampleVisAttributes = new G4VisAttributes(G4Colour(0.15, 0.2, 0.8, 0.5));
     sampleVisAttributes->SetForceSolid(true);
     sampleVisAttributes->SetVisibility(true);
-    new G4PVPlacement(nullptr, G4ThreeVector(-Sim::SCINT_SIZE/2 + Sim::SAMPLE_WIDTH/2, 0, -Sim::SCINT_THICKNESS - Sim::COATING_THICKNESS - Sim::SAMPLE_THICKNESS/2), 
+    new G4PVPlacement(nullptr, G4ThreeVector(-Sim::SCINT_SIZE/2 + Sim::SAMPLE_WIDTH/2, 0, Sim::SampleCenterZ(Sim::SCINT_THICKNESS, Sim::SAMPLE_THICKNESS)), 
                       sampleLog, "SamplePhys", worldLog, false, 0, true);
     sampleLog->SetVisAttributes(sampleVisAttributes);
     sampleLog->SetSensitiveDetector(eventProc);
@@ -170,7 +170,7 @@ void GeometryConstructor::UpdateScintillatorGeometry(G4double thickness) {
     // Update sample position to maintain alignment
     G4VPhysicalVolume* samplePhys = physVolStore->GetVolume("SamplePhys", false);
     if (samplePhys) {
-        samplePhys->SetTranslation(G4ThreeVector(0, 0, -thickness - Sim::COATING_THICKNESS - Sim::SAMPLE_THICKNESS/2));
+        samplePhys->SetTranslation(G4ThreeVector(0, 0, Sim::SampleCenterZ(thickness, Sim::SAMPLE_THICKNESS)));
         G4cout << "GeometryConstructor: Sample placement updated" << G4endl;
     } else {
         G4cerr << "ERROR: SamplePhys not found in volume store!" << G4endl;
@@ -211,8 +211,9 @@ void GeometryConstructor::UpdateSampleGeometry(G4double thickness, G4Material* m
 
     G4VPhysicalVolume* samplePhys = physVolStore->GetVolume("SamplePhys", false);
     if (samplePhys) {
-        samplePhys->SetTranslation(G4ThreeVector(-Sim::SCINT_SIZE/2 + width/2, 0, -Sim::SCINT_THICKNESS - Sim::COATING_THICKNESS - thickness/2));
-        G4cout << "GeometryConstructor: Sample placement updated" << G4endl;
+        samplePhys->SetTranslation(G4ThreeVector(-Sim::SCINT_SIZE/2 + width/2, 0, Sim::SampleCenterZ(Sim::SCINT_THICKNESS, thickness)));
+        G4cout << "GeometryConstructor: Sample placement updated (centre z = "
+               << Sim::SampleCenterZ(Sim::SCINT_THICKNESS, thickness) / cm << " cm)" << G4endl;
     } else {
         G4cerr << "ERROR: SamplePhys not found in volume store!" << G4endl;
     }
