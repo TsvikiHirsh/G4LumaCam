@@ -16,8 +16,8 @@ and lens parameters we can directly check four physical claims:
       whole scintillator.
 
 Each test runs a G4 sim, reads sim_data_*.csv, traces through the lens
-(same code path the empindex pipeline uses), and reports image-plane
-statistics. No empindex, no clustering, no blob: just G4 + lens.
+(same code path the reconstruction pipeline uses), and reports image-plane
+statistics. No reconstruction, no clustering, no blob: just G4 + lens.
 """
 
 from __future__ import annotations

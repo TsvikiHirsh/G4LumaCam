@@ -30,7 +30,7 @@ def _coerce(value: str):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Public parser factory (used by empindex's contract tests)."""
+    """Public parser factory (used by contract tests of downstream tools)."""
     return _build_parser()
 
 
@@ -59,8 +59,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Trace a virtual point-source grid through the lens "
                              "(once per run, a few percent overhead) and write each "
                              "photon's expected centroid pixel as x_opt/y_opt columns "
-                             "in TracedPhotons. After 'empindex --sim-merge' they "
-                             "appear as sim/x_opt, sim/y_opt; ev/x - sim/x_opt "
+                             "in TracedPhotons. After joining the simulation truth to the "
+                             "reconstruction they appear as sim/x_opt, sim/y_opt; ev/x - sim/x_opt "
                              "isolates reconstruction effects from lens optics.")
     optics.add_argument("--no-enforce-aperture", action="store_true", default=False,
                         help="Disable physical aperture enforcement during tracing. "
@@ -109,7 +109,7 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="Suffix appended to output file names.")
     out.add_argument("--sym-suffix", type=str, default=None, metavar="DIR",
                      help="After tracing, create a tpx3Files symlink inside DIR pointing "
-                          "to the actual tpx3Files output. Useful when the empindex working "
+                          "to the actual tpx3Files output. Useful when the reconstruction working "
                           "directory differs from the trace archive (e.g. "
                           "--suffix z30 --sym-suffix openbeam_ptb/z30).")
 

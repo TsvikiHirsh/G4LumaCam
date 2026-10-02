@@ -5,7 +5,23 @@ All notable changes to G4LumaCam will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.0] - 2026-07-04
+## [0.6.0] - 2026-10-02
+
+### Fixed
+- **TDC trigger encoding** (`lumacam.optics.encode_tdc_packet`): the trigger time is
+  rounded once to 25/4096 ns ticks and split into coarse and fine parts, so the
+  rounded fine time carries into the coarse count. Before, a trigger just below a
+  25 ns boundary (about a quarter of the pulses) was written 25 ns early, which
+  shifted the time of flight of the events of those pulses.
+
+### Added
+- **Neutron entry point**: SimPhotons records `nx0`, `ny0`, `nz0`, where the neutron
+  entered the scintillator (`nx`, `ny`, `nz` stay the last interaction point).
+- **Sample distance**: `/lumacam/sampleDistance` (Python `Config.sample_distance`)
+  places the sample at a given distance upstream of the scintillator (default:
+  the previous placement against it).
+- `gaussian_probabilistic`: the measured 8 ns satellite emission delay is the
+  default `ap_delay`.
 
 ### Changed
 - **`gaussian_probabilistic` is now the default detector model**, with all
@@ -36,15 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (largest-cluster event positioning - robust against afterpulse satellites).
 - **Publication figure suite** (`notebooks/scripts/pubfigs/`) generating the
   manuscript figures from the calibration archives.
-- **New notebook** `notebooks/calibrated_model_v06.ipynb`: the calibrated
-  model, the afterpulse mechanism, and the `empindex --params best` /
-  `--events2image` workflow.
 
-### Companion (empindex)
-- `empindex run` accepts built-in presets `best` / `best-inf` / `best-cog` /
-  `best-first` / `best-largest` (calibrated reconstruction + trace sections),
-  and a new `--events2image` flag writing TOF-resolved TIFF stacks
-  (`EventImages/stack.tif`, `sum.tif`, `tof_bins.csv`).
 
 ## [0.5.0] - 2025-12-30
 

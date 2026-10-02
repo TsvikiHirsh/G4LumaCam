@@ -18,7 +18,7 @@ G4LumaCam is a Geant4-based simulation package for the LumaCam event camera that
 - **Optical Truth Reference**: `calibrate=True` traces a virtual point-source grid and tags every photon with its ideal landing position (`sim/x_opt`), isolating detector/reconstruction effects from lens optics
 - **Advanced Detector Models**: 8 physics-based detector models including MCP+intensifier, Timepix3, and customizable phosphor screens (P20/P43/P46/P47)
 - **Standard Output Format**: Generates TPX3 files compatible with multiple reconstruction tools
-- **Flexible Reconstruction**: Use EMPIR for the official workflow, or the open-source `empindex` pipeline with built-in calibrated presets (`empindex run DATA --params best`)
+- **Same Reconstruction as Measured Data**: The simulated tpx3 files are reconstructed with EMPIR exactly like measured data, and associated with [neutron_event_analyzer](https://github.com/TsvikiHirsh/neutron_event_analyzer)
 - **Configurable Sources**: Customizable neutron source properties (energy, spatial distribution, flux, etc.)
 - **Efficient Processing**: Multi-process support for large-scale simulations
 - **End-to-End Workflow**: From particle generation to reconstructed images
@@ -155,7 +155,6 @@ satellites.
 ## Documentation
 
 - **[Tutorial Notebook](notebooks/G4LumaCam_Tutorial.ipynb)**: Step-by-step guide with examples
-- **[Calibrated Model & Presets Notebook](notebooks/calibrated_model_v06.ipynb)**: The v0.6 calibrated detector model, afterpulse satellites, and the `empindex --params best` workflow
 - **[Detector Models Guide](.documents/DETECTOR_MODELS_SUMMARY.md)**: Quick reference for 8 available detector models
 - **[Full Detector Documentation](.documents/DETECTOR_MODELS.md)**: Complete documentation with physics background
 - **[Blob vs Gain Explained](.documents/BLOB_VS_GAIN.md)**: Understanding gain-dependent blob sizing

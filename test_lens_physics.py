@@ -2,7 +2,7 @@
 """
 Synthetic point-source tests for the lumacam Lens model.
 
-Goal: prove the optics work as expected, with no G4 simulation, no empindex
+Goal: prove the optics work as expected, with no G4 simulation, no reconstruction
 clustering, no Bragg-track depth spread. We build photon cones aimed at the
 lens entrance pupil from known source coordinates, trace them through the
 lens at chosen (zfine, zscan, fnumber), and check four physical predictions:
@@ -28,8 +28,8 @@ lens at chosen (zfine, zscan, fnumber), and check four physical predictions:
           cover the whole scintillator. Verify by sweeping zscan around the
           known focal depth and looking at the FWHM of the RMS curve.
 
-If any of these fail, the lens model is misconfigured and tuning empindex
-output is hopeless. If they all pass, the noise you see in the empindex
+If any of these fail, the lens model is misconfigured and tuning the reconstruction
+output is hopeless. If they all pass, the noise you see in the reconstruction
 plots is downstream (reconstruction floor / source extent), not the optics.
 
 Usage:

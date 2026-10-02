@@ -949,7 +949,7 @@ class Lens:
             Trace a virtual point-source grid through the refocused lens
             (once per run, a few seconds) and write each photon's expected
             centroid pixel as 'x_opt'/'y_opt' columns in TracedPhotons.
-            After `empindex --sim-merge` they appear as sim/x_opt, sim/y_opt;
+            After joining the simulation truth to the reconstruction they appear as sim/x_opt, sim/y_opt;
             ev/x - sim/x_opt isolates reconstruction effects from the lens
             optics (magnification, depth defocus, field distortion).
         verbosity : VerbosityLevel, default VerbosityLevel.BASIC
@@ -1695,7 +1695,7 @@ class Lens:
                         # ----------------------------------------------------------------------
 
                     # Add toa_tick: raw TPX3 hardware tick (1 tick = 1.5625 ns).
-                    # Uses round() to match _write_tpx3 and empindex reconstruction.
+                    # Uses round() to match _write_tpx3 and the reconstruction.
                     # Only meaningful for in_tpx3=True rows; set to -1 elsewhere.
                     if 'toa2' in result_df.columns:
                         _toa2 = result_df['toa2'].to_numpy().astype(float)
