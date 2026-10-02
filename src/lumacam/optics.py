@@ -28,6 +28,55 @@ import struct
 import json
 import shutil
 
+
+def encode_tdc_packet(trigger_time_ns, trigger_counter, tdc_channel=1, edge_type='rising'):
+    """
+    Encode TDC trigger packet following TPX3 format.
+    
+    From C++ decoder:
+    coarsetime = (temp >> 12) & 0xFFFFFFFF  (32 bits in 25ns units)
+    tmpfine = (temp >> 5) & 0xF  (4 bits, clock phase 1-12)
+    trigtime_fine = (temp & 0x0E00) | (((tmpfine-1) << 9) / 12)
+    tdc_time = coarsetime*25e-9 + trigtime_fine*(25/4096)*1e-9
+    """
+    # Determine header
+    if tdc_channel == 1:
+        header = 0x6F if edge_type == 'rising' else 0x6A
+    else:
+        header = 0x6E if edge_type == 'rising' else 0x6B
+    
+    # Time in units of 25/4096 ns, rounded once: coarse = 25 ns count (32 bits),
+    # fine = 12-bit remainder. Rounding first keeps the carry, so a trigger just
+    # below a 25 ns boundary (e.g. 16999.9999 ns) is not written 25 ns early.
+    ticks = int(round(trigger_time_ns * 4096.0 / 25.0))
+    coarsetime = (ticks >> 12) & 0xFFFFFFFF
+    trigtime_fine = ticks & 0xFFF
+    
+    # Extract upper 3 bits (bits 9-11)
+    fine_upper = (trigtime_fine >> 9) & 0x7
+    
+    # Extract lower 9 bits
+    fine_lower = trigtime_fine & 0x1FF
+    
+    # Reverse tmpfine encoding: fine_lower ≈ ((tmpfine-1) << 9) / 12
+    # So: tmpfine ≈ (fine_lower * 12 / 512) + 1
+    if fine_lower == 0:
+        tmpfine = 1
+    else:
+        tmpfine = int(round((fine_lower * 12.0 / 512.0) + 1.0))
+        tmpfine = max(1, min(12, tmpfine))
+    
+    # Build 64-bit TDC packet
+    tdc_word = (
+        (int(header) << 56) |
+        ((trigger_counter & 0xFFF) << 44) |
+        ((coarsetime & 0xFFFFFFFF) << 12) |
+        ((fine_upper & 0x7) << 9) |
+        ((tmpfine & 0xF) << 5)
+    )
+    
+    return struct.pack("<Q", tdc_word)
+
 class VerbosityLevel(IntEnum):
     """Verbosity levels for simulation output."""
     QUIET = 0    # Show nothing except progress bar
@@ -2033,55 +2082,6 @@ class Lens:
             msb_word = (0x4 << 60) | (0x5 << 56) | ((timer_value >> 32) & 0xFFFF) << 16
             return struct.pack("<Q", lsb_word) + struct.pack("<Q", msb_word)
         
-        def encode_tdc_packet(trigger_time_ns, trigger_counter, tdc_channel=1, edge_type='rising'):
-            """
-            Encode TDC trigger packet following TPX3 format.
-            
-            From C++ decoder:
-            coarsetime = (temp >> 12) & 0xFFFFFFFF  (32 bits in 25ns units)
-            tmpfine = (temp >> 5) & 0xF  (4 bits, clock phase 1-12)
-            trigtime_fine = (temp & 0x0E00) | (((tmpfine-1) << 9) / 12)
-            tdc_time = coarsetime*25e-9 + trigtime_fine*(25/4096)*1e-9
-            """
-            # Determine header
-            if tdc_channel == 1:
-                header = 0x6F if edge_type == 'rising' else 0x6A
-            else:
-                header = 0x6E if edge_type == 'rising' else 0x6B
-            
-            # Coarse time: 25ns resolution (32 bits)
-            coarsetime = int(trigger_time_ns / 25.0) & 0xFFFFFFFF
-            
-            # Fine time: sub-25ns component
-            fine_ns = trigger_time_ns - (coarsetime * 25.0)
-            
-            # Convert to 12-bit trigtime_fine (0-4095 representing 0-25ns)
-            trigtime_fine = int(round(fine_ns * 4096.0 / 25.0)) & 0xFFF
-            
-            # Extract upper 3 bits (bits 9-11)
-            fine_upper = (trigtime_fine >> 9) & 0x7
-            
-            # Extract lower 9 bits
-            fine_lower = trigtime_fine & 0x1FF
-            
-            # Reverse tmpfine encoding: fine_lower ≈ ((tmpfine-1) << 9) / 12
-            # So: tmpfine ≈ (fine_lower * 12 / 512) + 1
-            if fine_lower == 0:
-                tmpfine = 1
-            else:
-                tmpfine = int(round((fine_lower * 12.0 / 512.0) + 1.0))
-                tmpfine = max(1, min(12, tmpfine))
-            
-            # Build 64-bit TDC packet
-            tdc_word = (
-                (int(header) << 56) |
-                ((trigger_counter & 0xFFF) << 44) |
-                ((coarsetime & 0xFFFFFFFF) << 12) |
-                ((fine_upper & 0x7) << 9) |
-                ((tmpfine & 0xF) << 5)
-            )
-            
-            return struct.pack("<Q", tdc_word)
         
         if traced_data is None or len(traced_data) == 0:
             if verbosity >= 2:
