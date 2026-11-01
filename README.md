@@ -152,6 +152,52 @@ multi-photon events, use the largest-cluster event position
 out-of-focus parameter set) to make the reconstruction robust against these
 satellites.
 
+## Nanoguide: an AmBe Source Beside a Fibre Guide
+
+A nanoguide is a scintillator of fibres (EJ-200 type PVT, 50 % by volume) in PMMA,
+here 10 mm x 10 mm x 100 mm with the fibres along its length, imaged end-on through
+the microscope. In the simulation the length runs along the optical axis (z). The
+scintillation photons are not tracked: each one born inside the fibres' trapping cone
+towards the viewed end face (cos theta >= n_clad/n_core, NA 0.53) is moved to that
+face at its birth (x, y), delayed by its path along the fibre, and leaves refracted
+into air with a random azimuth. The end face is the lens's object plane (z = 0 in
+SimPhotons).
+
+```python
+import lumacam
+from lumacam.nanoguide import MICROSCOPE_ZFINE, light_clusters, cluster_pairs
+
+# AmBe 50 mm from the guide axis at azimuth 30 deg (end-face x-y plane, from +x),
+# halfway along the guide; emission restricted to the window that covers the guide
+config = lumacam.Config.ambe_nanoguide(azimuth=30, distance=50, num_events=100000)
+sim = lumacam.Simulate("archive/ambe_az30")
+df = sim.run(config)
+print("source neutrons:", config.num_events / config.solid_angle_fraction)
+
+# events with separated light clusters (double scattering) on the end face
+pairs = cluster_pairs(light_clusters(df, merge=1.0, min_photons=20))
+
+# image the end face with the microscope (focused on z = 0)
+lens = lumacam.Lens(archive="archive/ambe_az30", kind="microscope", zfine=MICROSCOPE_ZFINE)
+lens.trace_rays(zfine=MICROSCOPE_ZFINE)
+```
+
+- `particle="gamma"` simulates the 4.44 MeV gamma line instead of neutrons.
+- `spectrum=` takes neutron spectrum points (MeV, intensity) or a two-column file;
+  the default is the AmBe spectrum shipped with Geant4
+  (`examples/advanced/underground_physics/ambe_spectrum.mac`, mean 3.8 MeV), not the
+  ISO 8529-1 reference spectrum (mean 4.2 MeV).
+- `source_strength=` (emissions/s into 4 pi) spreads the events in time at the
+  measured rate, so random coincidences between neutrons are as in the measurement;
+  without it the events are 1 ms apart on average.
+- `depth=` places the source along the guide (mm from the viewed end face).
+- Fibre parameters: `fiber_core_index` (1.58), `fiber_clad_index` (1.49) and
+  `fiber_att_length` (cm, default none) on the `Config`, or `/lumacam/fiberCoreIndex`,
+  `/lumacam/fiberCladIndex`, `/lumacam/fiberAttLength` and `/lumacam/nanoguide` in a
+  macro; `/lumacam/scintSize` sets the transverse size of any scintillator.
+- In the traced image pixel x and y follow the end-face x and y (positive to
+  positive), at FOV / 256 = 39 um per pixel.
+
 ## Documentation
 
 - **[Tutorial Notebook](notebooks/G4LumaCam_Tutorial.ipynb)**: Step-by-step guide with examples

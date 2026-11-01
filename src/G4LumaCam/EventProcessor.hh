@@ -50,6 +50,9 @@ private:
     G4double currentEventTriggerTime;
 
     void resetData();
+    void addPhoton(const G4Track* track, G4int parentID,
+                   G4double x0, G4double y0, G4double z0,
+                   G4double dx0, G4double dy0, G4double dz0, G4double toa);
     void writeData();
     void openOutputFile();
 };

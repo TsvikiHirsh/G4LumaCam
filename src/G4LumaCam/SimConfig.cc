@@ -16,6 +16,10 @@ namespace Sim {
     G4double SAMPLE_WIDTH = 12.0 * cm; // Full width
     G4double SAMPLE_GAP = -1.0;        // < 0: legacy placement (see SampleCenterZ)
     G4double COATING_THICKNESS = 0.01 * cm;
+    G4bool NANOGUIDE = false;
+    G4double FIBER_CORE_INDEX = 1.58;
+    G4double FIBER_CLAD_INDEX = 1.49;
+    G4double FIBER_ATT_LENGTH = 0.0;
     G4double TMIN = 0.0 * ns;
     G4double TMAX = 0.0 * ns;
     G4double FLUX = 0.0; // Default: no pulsed structure
@@ -29,6 +33,15 @@ namespace Sim {
             G4cout << "Scintillator thickness set to: " << thickness / cm << " cm" << G4endl;
         } else {
             G4cerr << "ERROR: Scintillator thickness must be positive!" << G4endl;
+        }
+    }
+
+    void SetScintSize(G4double size) {
+        if (size > 0) {
+            SCINT_SIZE = size;
+            G4cout << "Scintillator size (transverse full width) set to: " << size / cm << " cm" << G4endl;
+        } else {
+            G4cerr << "ERROR: Scintillator size must be positive!" << G4endl;
         }
     }
 

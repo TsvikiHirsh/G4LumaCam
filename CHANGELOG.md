@@ -5,6 +5,30 @@ All notable changes to G4LumaCam will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Nanoguide** (`/lumacam/nanoguide`, Python `Config.nanoguide`): a fibre-structured
+  scintillator with the fibres along z. Guided scintillation photons (meridional
+  trapping cone, `/lumacam/fiberCoreIndex` 1.58 and `/lumacam/fiberCladIndex` 1.49)
+  are moved from their birth (x, y) to the viewed end face, delayed by their path
+  along the fibre and refracted into air; the end face is written as the object
+  plane z = 0. Optional attenuation along the fibres (`/lumacam/fiberAttLength`).
+  Photons are not tracked, so a 100 mm guide runs as fast as a thin screen.
+- **Nanoguide material** (`/lumacam/scintMaterial Nanoguide`): EJ-200 type PVT and
+  PMMA, 50 % by volume, with half the PVT light yield.
+- **Scintillator size** (`/lumacam/scintSize`, Python `Config.scintillator_size`):
+  transverse full width of the square scintillator (default 12 cm).
+- **`Config.ambe_nanoguide`**: AmBe point source beside the guide at a given
+  azimuth, distance and depth, emitting isotropically into the window that covers
+  the guide (`Config.solid_angle_fraction` converts events to source emissions);
+  neutrons from the Geant4 AmBe spectrum or the 4.44 MeV gamma line, optionally
+  spread in time at the source rate. `Config` gains `pos_type` ("Point"),
+  `min_phi`/`max_phi` and point-wise ("Arb") energy spectra.
+- **`lumacam.nanoguide`**: source geometry (`source_window`), light clusters per
+  event (`light_clusters`) and their pairwise separations and time differences
+  (`cluster_pairs`), and the microscope focus on the end face (`MICROSCOPE_ZFINE`).
+
 ## [0.6.0] - 2026-10-02
 
 ### Fixed

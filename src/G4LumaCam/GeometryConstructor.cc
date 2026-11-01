@@ -94,7 +94,7 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
 
 void GeometryConstructor::UpdateScintillatorGeometry(G4double thickness) {
     G4cout << "GeometryConstructor: Updating scintillator geometry with thickness: " 
-           << thickness/cm << " cm" << G4endl;
+           << thickness/cm << " cm, size: " << Sim::SCINT_SIZE/cm << " cm" << G4endl;
     
     G4PhysicalVolumeStore* physVolStore = G4PhysicalVolumeStore::GetInstance();
 
@@ -102,6 +102,8 @@ void GeometryConstructor::UpdateScintillatorGeometry(G4double thickness) {
     if (scintLog) {
         G4Box* scintSolid = dynamic_cast<G4Box*>(scintLog->GetSolid());
         if (scintSolid) {
+            scintSolid->SetXHalfLength(Sim::SCINT_SIZE/2); // Update transverse size
+            scintSolid->SetYHalfLength(Sim::SCINT_SIZE/2);
             scintSolid->SetZHalfLength(thickness/2); // Update scintillator thickness
             G4cout << "GeometryConstructor: Scintillator solid updated" << G4endl;
         } else {
@@ -123,6 +125,7 @@ void GeometryConstructor::UpdateScintillatorGeometry(G4double thickness) {
     if (blackSideLog) {
         G4Box* blackSideSolid = dynamic_cast<G4Box*>(blackSideLog->GetSolid());
         if (blackSideSolid) {
+            blackSideSolid->SetXHalfLength(Sim::SCINT_SIZE/2); // Update side coating width
             blackSideSolid->SetZHalfLength(thickness/2); // Update side coating thickness
             G4cout << "GeometryConstructor: Black tape side solid updated" << G4endl;
         } else {
@@ -150,8 +153,9 @@ void GeometryConstructor::UpdateScintillatorGeometry(G4double thickness) {
     if (blackBackLog) {
         G4Box* blackBackSolid = dynamic_cast<G4Box*>(blackBackLog->GetSolid());
         if (blackBackSolid) {
-            // Back box dimensions remain the same (covers XY plane)
-            G4cout << "GeometryConstructor: Black tape back solid verified" << G4endl;
+            blackBackSolid->SetXHalfLength(Sim::SCINT_SIZE/2); // Covers the XY plane
+            blackBackSolid->SetYHalfLength(Sim::SCINT_SIZE/2);
+            G4cout << "GeometryConstructor: Black tape back solid updated" << G4endl;
         } else {
             G4cerr << "ERROR: blackBackLog has no valid G4Box solid!" << G4endl;
         }
@@ -176,9 +180,14 @@ void GeometryConstructor::UpdateScintillatorGeometry(G4double thickness) {
         G4cerr << "ERROR: SamplePhys not found in volume store!" << G4endl;
     }
 
-    // Update monitor position
+    // Update monitor size and position
     G4VPhysicalVolume* monitorPhys = physVolStore->GetVolume("MonitorPhys", false);
     if (monitorPhys) {
+        G4Box* monitorSolid = dynamic_cast<G4Box*>(monitorPhys->GetLogicalVolume()->GetSolid());
+        if (monitorSolid) {
+            monitorSolid->SetXHalfLength(Sim::SCINT_SIZE/2);
+            monitorSolid->SetYHalfLength(Sim::SCINT_SIZE/2);
+        }
         monitorPhys->SetTranslation(G4ThreeVector(0, 0, thickness + 0.5*um));
         G4cout << "GeometryConstructor: Monitor placement updated" << G4endl;
     } else {

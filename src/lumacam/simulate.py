@@ -1,3 +1,4 @@
+import math
 import os
 import subprocess
 import re
@@ -32,7 +33,8 @@ class Config:
     energy_max: Optional[float] = None  # Used for Lin distribution
     energy_gradient: Optional[float] = None  # Used for Lin distribution
     energy_intercept: Optional[float] = None  # Used for Lin distribution
-    energy_histogram: Optional[List[Tuple[float, float]]] = None  # Used for Hist distribution: (energy, intensity)
+    energy_histogram: Optional[List[Tuple[float, float]]] = None  # Used for Hist distribution: (energy, intensity); for Arb: points (MeV, intensity)
+    energy_interpolation: str = "Lin"  # Arb distribution: interpolation between the points (Lin, Log, Exp, Spline)
     position_x: float = 0
     position_y: float = 0
     position_z: float = -1059
@@ -40,6 +42,7 @@ class Config:
     direction_x: float = 0
     direction_y: float = 0
     direction_z: float = 1
+    pos_type: str = "Plane"  # GPS position type: "Plane" (shape, halfx, halfy) or "Point"
     shape: str = "Rectangle"
     halfx: float = 60
     halfy: float = 60
@@ -47,6 +50,8 @@ class Config:
     angle_type: str = "iso"
     max_theta: float = 0
     min_theta: float = 0
+    min_phi: Optional[float] = None  # iso emission azimuth range; None: full circle
+    max_phi: Optional[float] = None
     angle_unit: str = "deg"
     
     # Time spread parameters
@@ -64,6 +69,13 @@ class Config:
     sample_width: float = 12.0  # Sample width in cm (default 12 cm)  
     sample_distance: Optional[float] = None  # cm, scintillator front face to sample; None: right in front
     scintillator_thickness: float = 20  # Scintillator thickness in mm (default is 20 mm)
+    scintillator_size: Optional[float] = None  # cm, transverse full width (square); None: 12 cm
+    # Nanoguide: fibres along the scintillator thickness (z); guided photons are moved
+    # from their birth (x, y) to the viewed end face, which becomes the object plane z = 0
+    nanoguide: bool = False
+    fiber_core_index: float = 1.58  # scintillating fibres (EJ-200 type PVT)
+    fiber_clad_index: float = 1.49  # matrix around them (PMMA)
+    fiber_att_length: float = 0.0  # cm, attenuation length along the fibres; 0: none
     csv_batch_size: int = 0
     # Ion parameters for radioactive decay
     ion_z: Optional[int] = None  # Atomic number
@@ -342,6 +354,81 @@ class Config:
                 csv_batch_size=10000,
             )
 
+    @classmethod
+    def ambe_nanoguide(cls, azimuth: float, distance: float, depth: Optional[float] = None,
+                       particle: str = "neutron", spectrum=None,
+                       source_strength: Optional[float] = None,
+                       length: float = 100.0, width: float = 10.0,
+                       num_events: int = 100000) -> 'Config':
+        """
+        AmBe point source beside a nanoguide viewed end-on (see lumacam.nanoguide).
+
+        The nanoguide (EJ-200 type fibres in PMMA, 50 % each) runs along z with its viewed
+        end face as the lens's object plane. The source sits in a plane perpendicular to the
+        guide and emits isotropically into the window that just covers the guide, so every
+        event is a neutron (or gamma) heading for it; ``solid_angle_fraction`` converts
+        events to source emissions. Image the end face with ``Lens(kind="microscope")``.
+
+        Args:
+            azimuth: source direction seen from the guide axis, deg (end-face x-y plane, from +x).
+            distance: source to guide axis, mm.
+            depth: source position along the guide, mm from the viewed end face (default: middle).
+            particle: "neutron" (AmBe spectrum) or "gamma" (the 4.44 MeV line of 12C).
+            spectrum: neutron spectrum, points (MeV, intensity) or a two-column file;
+                default: the AmBe spectrum shipped with Geant4 (lumacam.nanoguide.AMBE_SPECTRUM).
+            source_strength: emissions per second into 4 pi. Events are spread uniformly in
+                time at the matching rate, so overlaps between events (random coincidences)
+                are as in the measurement. Default: 1 kHz into the window, i.e. isolated events.
+            length, width: guide length and transverse full width, mm.
+            num_events: events to simulate.
+        """
+        from .nanoguide import AMBE_GAMMA_MEV, AMBE_SPECTRUM, load_spectrum, source_window
+
+        w = source_window(azimuth, distance, depth, length=length, width=width)
+        if particle == "neutron":
+            energy = dict(energy_type="Arb", energy_histogram=load_spectrum(spectrum or AMBE_SPECTRUM))
+        elif particle == "gamma":
+            energy = dict(energy_type="Mono", energy=AMBE_GAMMA_MEV)
+        else:
+            raise ValueError(f"particle must be 'neutron' or 'gamma', got {particle!r}")
+        rate = source_strength * w["fraction"] if source_strength else 1e3  # events/s
+        return cls(
+            particle=particle,
+            energy_unit="MeV",
+            **energy,
+            pos_type="Point",
+            position_x=round(w["x"], 4),
+            position_y=round(w["y"], 4),
+            position_z=round(w["z"], 4),
+            position_unit="mm",
+            angle_type="iso",
+            min_theta=round(w["theta_min"], 6),
+            max_theta=round(w["theta_max"], 6),
+            min_phi=round(w["phi_min"], 6),
+            max_phi=round(w["phi_max"], 6),
+            angle_unit="deg",
+            tmin=0.0,
+            tmax=num_events / rate * 1e9,
+            sample_material="G4_Galactic",
+            scintillator="Nanoguide",
+            scintillator_size=width / 10,
+            scintillator_thickness=length / 10,
+            nanoguide=True,
+            num_events=num_events,
+            progress_interval=1000,
+            csv_filename="sim_data.csv",
+            csv_batch_size=10000,
+        )
+
+    @property
+    def solid_angle_fraction(self) -> float:
+        """Fraction of 4 pi covered by an iso source's theta/phi window (events per emission)."""
+        to_rad = math.pi / 180 if self.angle_unit == "deg" else 1.0
+        phi_min = 0.0 if self.min_phi is None else self.min_phi * to_rad
+        phi_max = 2 * math.pi if self.max_phi is None else self.max_phi * to_rad
+        return ((math.cos(self.min_theta * to_rad) - math.cos(self.max_theta * to_rad))
+                * (phi_max - phi_min) / (4 * math.pi))
+
     def write(self, output_file: str) -> str:
         """
         Write configuration to a Geant4 macro file.
@@ -376,6 +463,14 @@ class Config:
 """
                 for energy, intensity in self.energy_histogram:
                     macro_content += f"/gps/hist/point {energy} {intensity}\n"
+            elif self.energy_type == "Arb" and self.energy_histogram is not None:
+                macro_content += f"""
+/gps/ene/type Arb
+/gps/hist/type arb
+"""
+                for energy, intensity in self.energy_histogram:
+                    macro_content += f"/gps/hist/point {energy} {intensity}\n"
+                macro_content += f"/gps/hist/inter {self.energy_interpolation}\n"
 
         # Add time spread configuration
         if self.tmax > self.tmin:
@@ -391,24 +486,41 @@ class Config:
 /lumacam/freq {self.freq}
 """
 
+        if self.pos_type == "Plane":
+            pos_lines = (f"/gps/pos/shape {self.shape}\n"
+                         f"/gps/pos/halfx {self.halfx} {self.shape_unit}\n"
+                         f"/gps/pos/halfy {self.halfy} {self.shape_unit}\n"
+                         f"/gps/pos/type Plane\n")
+        else:
+            pos_lines = f"/gps/pos/type {self.pos_type}\n"
+        phi_lines = ""
+        if self.min_phi is not None:
+            phi_lines += f"/gps/ang/minphi {self.min_phi} {self.angle_unit}\n"
+        if self.max_phi is not None:
+            phi_lines += f"/gps/ang/maxphi {self.max_phi} {self.angle_unit}\n"
+        size_line = (f"/lumacam/scintSize {self.scintillator_size} cm\n"
+                     if self.scintillator_size is not None else "")
+        nanoguide_lines = ""
+        if self.nanoguide:
+            nanoguide_lines = (f"/lumacam/fiberCoreIndex {self.fiber_core_index}\n"
+                               f"/lumacam/fiberCladIndex {self.fiber_clad_index}\n"
+                               f"/lumacam/fiberAttLength {self.fiber_att_length}\n"
+                               f"/lumacam/nanoguide true\n")
+
         macro_content += f"""
 /gps/position {self.position_x} {self.position_y} {self.position_z} {self.position_unit}
 /gps/direction {self.direction_x} {self.direction_y} {self.direction_z}
-/gps/pos/shape {self.shape}
-/gps/pos/halfx {self.halfx} {self.shape_unit}
-/gps/pos/halfy {self.halfy} {self.shape_unit}
-/gps/pos/type Plane
-/gps/ang/type {self.angle_type}
+{pos_lines}/gps/ang/type {self.angle_type}
 /gps/ang/maxtheta {self.max_theta} {self.angle_unit}
 /gps/ang/mintheta {self.min_theta} {self.angle_unit}
-/run/printProgress {self.progress_interval}
+{phi_lines}/run/printProgress {self.progress_interval}
 /lumacam/scintMaterial {self.scintillator}
-/lumacam/sampleThickness {self.sample_thickness} cm
+{size_line}/lumacam/sampleThickness {self.sample_thickness} cm
 /lumacam/sampleWidth {self.sample_width} cm
 /lumacam/scintThickness {self.scintillator_thickness} cm
 /lumacam/sampleMaterial {self.sample_material}
 {f"/lumacam/sampleDistance {self.sample_distance} cm" if self.sample_distance is not None else ""}
-/lumacam/batchSize {self.csv_batch_size}
+{nanoguide_lines}/lumacam/batchSize {self.csv_batch_size}
 /control/verbose 2
 /run/beamOn {int(self.num_events)}
 """
@@ -433,6 +545,9 @@ class Config:
                 energy_info = "Energy: discrete lines\n"
                 for energy, intensity in self.energy_histogram:
                     energy_info += f"  {energy} {self.energy_unit} (intensity: {intensity:.3f})\n"
+            elif self.energy_type == "Arb" and self.energy_histogram is not None:
+                e = [energy for energy, _ in self.energy_histogram]
+                energy_info = f"Energy: spectrum of {len(e)} points from {min(e)} to {max(e)} MeV\n"
             source_info = f"Particle: {self.particle}\n  {energy_info}"
         
         # Add time spread info
@@ -454,13 +569,18 @@ class Config:
             f"{pulse_info}"
             f"  Position: ({self.position_x}, {self.position_y}, {self.position_z}) {self.position_unit}\n"
             f"  Direction: ({self.direction_x}, {self.direction_y}, {self.direction_z})\n"
-            f"  Shape: {self.shape} ({self.halfx}x{self.halfy} {self.shape_unit})\n"
-            f"  Angle: {self.angle_type} (max theta: {self.max_theta} {self.angle_unit})\n"
+            + (f"  Shape: {self.shape} ({self.halfx}x{self.halfy} {self.shape_unit})\n"
+               if self.pos_type == "Plane" else f"  Shape: {self.pos_type}\n")
+            + f"  Angle: {self.angle_type} (max theta: {self.max_theta} {self.angle_unit})\n"
             f"  Sample Material: {self.sample_material}\n"
             f"  Sample Thickness: {self.sample_thickness} cm\n"
             f"  Scintillator: {self.scintillator}\n"
             f"  Scintillator Thickness: {self.scintillator_thickness} cm\n"
-            f"  CSV Batch Size: {self.csv_batch_size}\n"
+            + (f"  Scintillator Size: {self.scintillator_size} cm\n" if self.scintillator_size is not None else "")
+            + (f"  Nanoguide: fibres along z (n_core {self.fiber_core_index}, n_clad {self.fiber_clad_index}, "
+               f"attenuation length {f'{self.fiber_att_length} cm' if self.fiber_att_length else 'none'})\n"
+               if self.nanoguide else "")
+            + f"  CSV Batch Size: {self.csv_batch_size}\n"
             f"  Progress Interval: {self.progress_interval}\n"
             f"  Events: {self.num_events}\n"
             f"  Output: {self.csv_filename}"

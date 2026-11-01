@@ -12,7 +12,7 @@
 
 MaterialBuilder::MaterialBuilder() 
     : vacuum(nullptr), air(nullptr), scintMaterialPVT(nullptr), 
-      scintMaterialGS20(nullptr), scintMaterialLYSO(nullptr), 
+      scintMaterialGS20(nullptr), scintMaterialLYSO(nullptr), scintMaterialNanoguide(nullptr),
       scintMaterial(nullptr), sampleMaterial(nullptr), 
       windowMaterial(nullptr), absorberMaterial(nullptr), 
       currentScintType(ScintType::EJ200) {
@@ -116,6 +116,9 @@ void MaterialBuilder::DefineMaterials() {
 
     // Scintillator (LYSO)
     buildLYSO();
+
+    // Nanoguide (EJ-200 type fibres in PMMA)
+    buildNanoguide();
 
     // Set default scintillator
     scintMaterial = scintMaterialPVT;
@@ -237,6 +240,45 @@ void MaterialBuilder::buildLYSO() {
     scintMaterialLYSO->GetIonisation()->SetBirksConstant(0.023 * mm/MeV);
 }
 
+// Nanoguide: scintillating PVT fibres (EJ-200 type) in a PMMA matrix, 50% of each by
+// volume, as one homogeneous material. The fibres are much thinner than a recoil-proton
+// track, so the light yield is the PVT yield times the fibre volume fraction. The optical
+// properties are those of the fibre core: photons are not tracked in the nanoguide
+// (EventProcessor moves them to the viewed end face), so RINDEX only sets Cerenkov emission.
+void MaterialBuilder::buildNanoguide() {
+    const G4double fillFraction = 0.5;  // scintillator volume fraction
+    G4NistManager* nist = G4NistManager::Instance();
+    G4Material* pmma = nist->FindOrBuildMaterial("G4_PLEXIGLASS");
+    G4double rhoPVT = scintMaterialPVT->GetDensity();
+    G4double rhoPMMA = pmma->GetDensity();
+    G4double rho = fillFraction * rhoPVT + (1 - fillFraction) * rhoPMMA;
+    scintMaterialNanoguide = new G4Material("ScintillatorNanoguide", rho, 2);
+    scintMaterialNanoguide->AddMaterial(scintMaterialPVT, fillFraction * rhoPVT / rho);
+    scintMaterialNanoguide->AddMaterial(pmma, (1 - fillFraction) * rhoPMMA / rho);
+
+    // PVT tables (copied, so the PVT material keeps its own), yield scaled by the fill fraction
+    G4MaterialPropertiesTable* pvt = scintMaterialPVT->GetMaterialPropertiesTable();
+    G4MaterialPropertiesTable* mpt = new G4MaterialPropertiesTable();
+    for (const char* key : {"RINDEX", "ABSLENGTH", "FASTCOMPONENT"}) {
+        G4MaterialPropertyVector* v = pvt->GetProperty(key);
+        std::vector<G4double> e, val;
+        for (size_t i = 0; i < v->GetVectorLength(); i++) {
+            e.push_back(v->Energy(i));
+            val.push_back((*v)[i]);
+        }
+        mpt->AddProperty(key, e.data(), val.data(), e.size());
+    }
+    mpt->AddConstProperty("SCINTILLATIONYIELD", fillFraction * pvt->GetConstProperty("SCINTILLATIONYIELD"));
+    for (const char* key : {"RESOLUTIONSCALE", "FASTTIMECONSTANT", "SCINTILLATIONRISETIME", "YIELDRATIO"}) {
+        mpt->AddConstProperty(key, pvt->GetConstProperty(key));
+    }
+    scintMaterialNanoguide->SetMaterialPropertiesTable(mpt);
+    scintMaterialNanoguide->GetIonisation()->SetBirksConstant(scintMaterialPVT->GetIonisation()->GetBirksConstant());
+    G4cout << "MaterialBuilder: Material properties set for " << scintMaterialNanoguide->GetName()
+           << " (density " << rho / (g/cm3) << " g/cm3, "
+           << mpt->GetConstProperty("SCINTILLATIONYIELD") * MeV << " photons/MeV)" << G4endl;
+}
+
 void MaterialBuilder::setupMaterialProperties(G4Material* mat, const G4double* energies,
                                              const G4double* rindex, const G4double* abslength,
                                              int nEntries, const G4double* scintillation) {
@@ -301,6 +343,13 @@ void MaterialBuilder::setScintillatorType(ScintType type) {
         } else {
             G4cerr << "ERROR: scintMaterialLYSO is nullptr!" << G4endl;
         }
+    } else if (type == ScintType::Nanoguide) {
+        if (scintMaterialNanoguide) {
+            scintMaterial = scintMaterialNanoguide;
+            G4cout << "MaterialBuilder: Scintillator set to Nanoguide" << G4endl;
+        } else {
+            G4cerr << "ERROR: scintMaterialNanoguide is nullptr!" << G4endl;
+        }
     }
 }
 
@@ -312,7 +361,9 @@ void MaterialBuilder::setScintillatorType(const G4String& typeName) {
         setScintillatorType(ScintType::GS20);
     } else if (typeName == "LYSO" || typeName == "ScintillatorLYSO") {
         setScintillatorType(ScintType::LYSO);
+    } else if (typeName == "Nanoguide" || typeName == "ScintillatorNanoguide") {
+        setScintillatorType(ScintType::Nanoguide);
     } else {
-        G4cerr << "ERROR: Unknown scintillator type: " << typeName << ". Available types: EJ200, GS20, LYSO, ScintillatorPVT, ScintillatorGS20, ScintillatorLYSO" << G4endl;
+        G4cerr << "ERROR: Unknown scintillator type: " << typeName << ". Available types: EJ200, GS20, LYSO, Nanoguide, ScintillatorPVT, ScintillatorGS20, ScintillatorLYSO, ScintillatorNanoguide" << G4endl;
     }
 }

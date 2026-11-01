@@ -18,6 +18,11 @@ public:
     void SetMaterial(const G4String& materialName);
     void SetScintillatorMaterial(const G4String& materialName);
     void SetScintThickness(G4double thickness);
+    void SetScintSize(G4double size);
+    void SetNanoguide(const G4String& enable);
+    void SetFiberCoreIndex(G4double n);
+    void SetFiberCladIndex(G4double n);
+    void SetFiberAttLength(G4double length);
     void SetSampleThickness(G4double thickness);
     void SetSampleWidth(G4double width);
     void SetSampleDistance(G4double distance);

@@ -4,6 +4,9 @@
 #include "G4Step.hh"
 #include "G4RunManager.hh"
 #include "G4SystemOfUnits.hh"
+#include "G4PhysicalConstants.hh"
+#include "Randomize.hh"
+#include <cmath>
 #include <filesystem>
 #include <cstdlib>
 
@@ -138,6 +141,31 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
         }
     }
 
+    // Nanoguide: the fibres run along z and carry the light to the viewed end face
+    // (z = SCINT_THICKNESS). A photon is guided there if its birth direction lies in the
+    // fibres' trapping cone (meridional rays: cos theta >= n_clad/n_core). It arrives at
+    // its birth (x, y), delayed by its path along the fibre, and leaves the face refracted
+    // into air with a random azimuth (the reflections in the fibre scramble it). The end
+    // face is the lens's object plane, so it is written at z = 0. Photons are not tracked.
+    if (Sim::NANOGUIDE && particleName == "opticalphoton" && track->GetCurrentStepNumber() == 1
+        && preStep->GetPhysicalVolume()->GetName() == "ScintPhys") {
+        G4double cosTheta = preDir.z();
+        if (cosTheta >= Sim::FIBER_CLAD_INDEX / Sim::FIBER_CORE_INDEX) {
+            G4double path = (Sim::SCINT_THICKNESS - prePos.z()) / cosTheta;
+            G4double sinOut = Sim::FIBER_CORE_INDEX * std::sqrt(1. - cosTheta * cosTheta);
+            G4bool transmitted = sinOut < 1.  // else totally reflected at the end face
+                && (Sim::FIBER_ATT_LENGTH <= 0 || G4UniformRand() < std::exp(-path / Sim::FIBER_ATT_LENGTH));
+            if (transmitted) {
+                G4double phi = twopi * G4UniformRand();
+                G4double toa = (preStep->GetGlobalTime() + path * Sim::FIBER_CORE_INDEX / c_light) / ns;
+                addPhoton(track, parentID, prePos.x() / mm, prePos.y() / mm, 0.,
+                          sinOut * std::cos(phi), sinOut * std::sin(phi), std::sqrt(1. - sinOut * sinOut), toa);
+            }
+        }
+        track->SetTrackStatus(fStopAndKill);
+        return true;
+    }
+
     // NEW: Capture optical photon generation position and direction
     if (particleName == "opticalphoton" && track->GetCurrentStepNumber() == 1) {
         // First step of optical photon - record where it was created
@@ -180,54 +208,62 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
         }
 
         if (inLens) {
-            if (tracks.find(parentID) == tracks.end()) {
-                tracks[parentID] = {"unknown", neutronPos[0], neutronPos[1], neutronPos[2], neutronEnergy, true, 0., 0., 0., 0., 0., 0.};
-            }
-            
-            if (tracks[parentID].energy <= 0) {
-                tracks[parentID].energy = neutronEnergy;
-            }
-            
-            PhotonRecord rec;
-            rec.id = track->GetTrackID();
-            rec.parentId = parentID;
-            rec.neutronId = neutronCount;
-
             // Birth position+direction: Python traces from here.
             // x0,y0,z0 is the true object point — no lateral drift error vs exit pos.
             // Birth dir == exit dir (black coating means no reflections, straight travel).
             if (tracks.find(tid) != tracks.end()) {
-                rec.x0  = tracks[tid].x0 / mm;
-                rec.y0  = tracks[tid].y0 / mm;
-                rec.z0  = tracks[tid].z0 / mm;
-                rec.dx0 = tracks[tid].dx0;
-                rec.dy0 = tracks[tid].dy0;
-                rec.dz0 = tracks[tid].dz0;
+                addPhoton(track, parentID,
+                          tracks[tid].x0 / mm, tracks[tid].y0 / mm, tracks[tid].z0 / mm,
+                          tracks[tid].dx0, tracks[tid].dy0, tracks[tid].dz0,
+                          track->GetGlobalTime() / ns);
             } else {
-                rec.x0 = rec.y0 = rec.z0 = 0.;
-                rec.dx0 = rec.dy0 = 0.;  rec.dz0 = 1.;
+                addPhoton(track, parentID, 0., 0., 0., 0., 0., 1., track->GetGlobalTime() / ns);
             }
-
-            rec.timeOfArrival = track->GetGlobalTime() / ns;
-            rec.wavelength = 1240. / (track->GetTotalEnergy() / eV);
-            rec.parentType = tracks[parentID].type;
-            rec.px = tracks[parentID].x0 / mm;   // parent birth position (= neutron interaction vertex)
-            rec.py = tracks[parentID].y0 / mm;
-            rec.pz = tracks[parentID].z0 / mm;
-            rec.parentEnergy = tracks[parentID].energy;
-            rec.nx = neutronPos[0] / mm;
-            rec.ny = neutronPos[1] / mm;
-            rec.nz = neutronPos[2] / mm;
-            rec.nx0 = neutronEntry[0] / mm;
-            rec.ny0 = neutronEntry[1] / mm;
-            rec.nz0 = neutronEntry[2] / mm;
-            rec.neutronEnergy = neutronEnergy;
-            rec.pulseId = particleGen ? particleGen->getCurrentPulseIndex() : -1;
-            rec.pulseTime = currentEventTriggerTime;
-            photons.push_back(rec);
         }
     }
     return true;
+}
+
+// Record an optical photon that reaches the lens: x0..dz0 (mm) is where and in which
+// direction Python starts tracing it, toa (ns) its arrival there.
+void EventProcessor::addPhoton(const G4Track* track, G4int parentID,
+                               G4double x0, G4double y0, G4double z0,
+                               G4double dx0, G4double dy0, G4double dz0, G4double toa) {
+    if (tracks.find(parentID) == tracks.end()) {
+        tracks[parentID] = {"unknown", neutronPos[0], neutronPos[1], neutronPos[2], neutronEnergy, true, 0., 0., 0., 0., 0., 0.};
+    }
+
+    if (tracks[parentID].energy <= 0) {
+        tracks[parentID].energy = neutronEnergy;
+    }
+
+    PhotonRecord rec;
+    rec.id = track->GetTrackID();
+    rec.parentId = parentID;
+    rec.neutronId = neutronCount;
+    rec.x0 = x0;
+    rec.y0 = y0;
+    rec.z0 = z0;
+    rec.dx0 = dx0;
+    rec.dy0 = dy0;
+    rec.dz0 = dz0;
+    rec.timeOfArrival = toa;
+    rec.wavelength = 1240. / (track->GetTotalEnergy() / eV);
+    rec.parentType = tracks[parentID].type;
+    rec.px = tracks[parentID].x0 / mm;   // parent birth position (= neutron interaction vertex)
+    rec.py = tracks[parentID].y0 / mm;
+    rec.pz = tracks[parentID].z0 / mm;
+    rec.parentEnergy = tracks[parentID].energy;
+    rec.nx = neutronPos[0] / mm;
+    rec.ny = neutronPos[1] / mm;
+    rec.nz = neutronPos[2] / mm;
+    rec.nx0 = neutronEntry[0] / mm;
+    rec.ny0 = neutronEntry[1] / mm;
+    rec.nz0 = neutronEntry[2] / mm;
+    rec.neutronEnergy = neutronEnergy;
+    rec.pulseId = particleGen ? particleGen->getCurrentPulseIndex() : -1;
+    rec.pulseTime = currentEventTriggerTime;
+    photons.push_back(rec);
 }
 
 void EventProcessor::EndOfEvent(G4HCofThisEvent*) {

@@ -6,6 +6,7 @@
 #include "G4Material.hh"
 #include "G4SystemOfUnits.hh"
 #include "G4UnitsTable.hh"
+#include "G4UIcommand.hh"
 
 LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLogVolume, 
                                    G4LogicalVolume* scintLogVolume, G4int batch)
@@ -37,7 +38,7 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
 
     // Scintillator material
     messenger->DeclareMethod("scintMaterial", &LumaCamMessenger::SetScintillatorMaterial)
-        .SetGuidance("Set the scintillator material (EJ200, GS20, or LYSO)")
+        .SetGuidance("Set the scintillator material (EJ200, GS20, LYSO, or Nanoguide)")
         .SetParameterName("material", false)
         .SetDefaultValue("EJ200");
 
@@ -46,6 +47,34 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
         .SetGuidance("Set the scintillator thickness in cm")
         .SetParameterName("thickness", false)
         .SetDefaultValue("1.0");
+
+    // Scintillator transverse size
+    messenger->DeclareMethod("scintSize", &LumaCamMessenger::SetScintSize)
+        .SetGuidance("Set the scintillator transverse full width (square, x and y) in cm")
+        .SetParameterName("size", false)
+        .SetDefaultValue("12.0");
+
+    // Nanoguide photon transport
+    messenger->DeclareMethod("nanoguide", &LumaCamMessenger::SetNanoguide)
+        .SetGuidance("Fibres along z: move each guided scintillation photon from its birth (x, y) "
+                     "to the viewed end face instead of tracking it")
+        .SetParameterName("enable", false)
+        .SetDefaultValue("true");
+
+    messenger->DeclareMethod("fiberCoreIndex", &LumaCamMessenger::SetFiberCoreIndex)
+        .SetGuidance("Nanoguide: refractive index of the scintillating fibres (default 1.58, PVT)")
+        .SetParameterName("n", false)
+        .SetDefaultValue("1.58");
+
+    messenger->DeclareMethod("fiberCladIndex", &LumaCamMessenger::SetFiberCladIndex)
+        .SetGuidance("Nanoguide: refractive index of the matrix around the fibres (default 1.49, PMMA)")
+        .SetParameterName("n", false)
+        .SetDefaultValue("1.49");
+
+    messenger->DeclareMethod("fiberAttLength", &LumaCamMessenger::SetFiberAttLength)
+        .SetGuidance("Nanoguide: light attenuation length along the fibres in cm (0: no attenuation)")
+        .SetParameterName("length", false)
+        .SetDefaultValue("0");
 
     // Sample thickness
     messenger->DeclareMethod("sampleThickness", &LumaCamMessenger::SetSampleThickness)
@@ -181,7 +210,7 @@ void LumaCamMessenger::SetScintillatorMaterial(const G4String& materialName) {
                << scintLog->GetMaterial()->GetName() << G4endl;
     } else {
         G4cerr << "ERROR: Scintillator material " << materialName << " not found!" << G4endl;
-        G4cout << "Available scintillator materials: EJ200, GS20, LYSO" << G4endl;
+        G4cout << "Available scintillator materials: EJ200, GS20, LYSO, Nanoguide" << G4endl;
     }
 }
 
@@ -201,6 +230,56 @@ void LumaCamMessenger::SetScintThickness(G4double thickness) {
     } else {
         G4cerr << "ERROR: Failed to cast to GeometryConstructor or scintLog is nullptr!" << G4endl;
     }
+}
+
+void LumaCamMessenger::SetScintSize(G4double size) {
+    if (size <= 0) {
+        G4cerr << "ERROR: Scintillator size must be positive!" << G4endl;
+        return;
+    }
+    Sim::SetScintSize(size * cm);
+    GeometryConstructor* geom = dynamic_cast<GeometryConstructor*>(
+        const_cast<G4VUserDetectorConstruction*>(
+            G4RunManager::GetRunManager()->GetUserDetectorConstruction()));
+    if (geom && scintLog) {
+        geom->UpdateScintillatorGeometry(Sim::SCINT_THICKNESS);
+        G4RunManager::GetRunManager()->GeometryHasBeenModified();
+    } else {
+        G4cerr << "ERROR: Failed to cast to GeometryConstructor or scintLog is nullptr!" << G4endl;
+    }
+}
+
+void LumaCamMessenger::SetNanoguide(const G4String& enable) {
+    // G4GenericMessenger reads a G4bool argument with operator>>, which takes only 0/1
+    Sim::NANOGUIDE = G4UIcommand::ConvertToBool(enable);
+    G4cout << "Nanoguide photon transport " << (Sim::NANOGUIDE ? "on" : "off") << G4endl;
+}
+
+void LumaCamMessenger::SetFiberCoreIndex(G4double n) {
+    if (n <= 1) {
+        G4cerr << "ERROR: Fibre core index must be above 1!" << G4endl;
+        return;
+    }
+    Sim::FIBER_CORE_INDEX = n;
+    G4cout << "Nanoguide fibre core index set to: " << n << G4endl;
+}
+
+void LumaCamMessenger::SetFiberCladIndex(G4double n) {
+    if (n < 1) {
+        G4cerr << "ERROR: Fibre cladding index must be at least 1!" << G4endl;
+        return;
+    }
+    Sim::FIBER_CLAD_INDEX = n;
+    G4cout << "Nanoguide fibre cladding index set to: " << n << G4endl;
+}
+
+void LumaCamMessenger::SetFiberAttLength(G4double length) {
+    if (length < 0) {
+        G4cerr << "ERROR: Fibre attenuation length must be non-negative!" << G4endl;
+        return;
+    }
+    Sim::FIBER_ATT_LENGTH = length * cm;
+    G4cout << "Nanoguide fibre attenuation length set to: " << length << " cm" << G4endl;
 }
 
 void LumaCamMessenger::SetSampleThickness(G4double thickness) {
