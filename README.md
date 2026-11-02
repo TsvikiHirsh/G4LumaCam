@@ -198,6 +198,10 @@ lens.trace_rays(zfine=MICROSCOPE_ZFINE)
 - In the traced image pixel x and y follow the end-face x and y (positive to
   positive), at FOV / 256 = 39 um per pixel.
 
+The notebook [`notebooks/nanoguide/ambe_azimuth_scan.ipynb`](notebooks/nanoguide/ambe_azimuth_scan.ipynb)
+scans the source azimuth and separates the neutron, gamma and scatter contributions,
+on the end face and at the camera, with the EMPIR settings of the nanoguide data.
+
 ## Documentation
 
 - **[Tutorial Notebook](notebooks/G4LumaCam_Tutorial.ipynb)**: Step-by-step guide with examples

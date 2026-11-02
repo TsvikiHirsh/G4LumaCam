@@ -30,7 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (1 = the first, 2+ = after a scatter, 0 = not traced back).
 - **`lumacam.nanoguide`**: source geometry (`source_window`), light clusters per
   event (`light_clusters`) and their pairwise separations and time differences
-  (`cluster_pairs`), and the microscope focus on the end face (`MICROSCOPE_ZFINE`).
+  (`cluster_pairs`), and the microscope focus on the end face (`MICROSCOPE_ZFINE`);
+  clusters carry their photon spread (`rms`).
+- **Notebook** `notebooks/nanoguide/ambe_azimuth_scan.ipynb`: AmBe source at eight
+  azimuths, neutron, gamma and scatter contributions on the end face and at the camera,
+  and the EMPIR reduction with the settings of the nanoguide data.
 
 ## [0.6.0] - 2026-10-02
 

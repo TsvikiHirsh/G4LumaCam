@@ -63,3 +63,6 @@ notebooks/scripts
 notebooks/docs
 notebooks/sweep_pos_dtime
 notebooks/scripts/pubfigs
+
+# nanoguide notebook: simulation cache
+notebooks/nanoguide/archive/

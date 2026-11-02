@@ -86,6 +86,8 @@ def test_clusters_and_pairs():
     assert sorted(cl.groupby('neutron_id').size().to_dict().items()) == [(0, 2)]
     first = cl[cl.n_photons == 230].iloc[0]
     assert first.particles == 'e-+proton' and first.energy == 3.0 and first.px == -4.5
+    lone = cl[cl.n_photons == 120].iloc[0]  # the second recoil alone: a spot of sigma 0.05 mm
+    assert lone.rms == pytest.approx(np.hypot(0.05, 0.05), rel=0.3)
     pr = cluster_pairs(cl)
     assert len(pr) == 1
     assert pr.distance.iloc[0] == pytest.approx(9.0, abs=0.05)
