@@ -1,0 +1,22 @@
+/lumacam/scintMaterial Nanoguide
+/lumacam/scintSize 1.0 cm
+/lumacam/scintThickness 10.0 cm
+/lumacam/nanoguide true
+/vis/open RayTracer 1400x900
+/vis/drawVolume
+/vis/geometry/set/visibility WorldLog 0 false
+/vis/geometry/set/visibility LShapeLog 0 false
+/vis/geometry/set/visibility SampleLog 0 false
+/vis/geometry/set/visibility MirrorLog 0 false
+/vis/geometry/set/visibility SensorLog 0 false
+/vis/geometry/set/colour ScintLog 0 0.45 0.62 0.85 1
+/vis/geometry/set/colour MonitorLog 0 0.9 0.3 0.2 1
+/vis/geometry/set/visibility black_side_log 0 false
+/vis/geometry/set/visibility black_back_log 0 false
+/vis/viewer/set/background white
+/vis/viewer/set/targetPoint 0 0 5 cm
+/vis/viewer/set/lightsVector 0.4 0.7 1
+/vis/viewer/set/projection p 20 deg
+/vis/viewer/set/viewpointVector 0.8 0.5 1
+/vis/viewer/zoomTo 0.9
+/vis/viewer/refresh

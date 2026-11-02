@@ -201,6 +201,9 @@ lens.trace_rays(zfine=MICROSCOPE_ZFINE)
 The notebook [`notebooks/nanoguide/ambe_azimuth_scan.ipynb`](notebooks/nanoguide/ambe_azimuth_scan.ipynb)
 scans the source azimuth and separates the neutron, gamma and scatter contributions,
 on the end face and at the camera, with the EMPIR settings of the nanoguide data.
+A short companion, [`notebooks/nanoguide/ambe_tracks_overview.ipynb`](notebooks/nanoguide/ambe_tracks_overview.ipynb),
+shows the setup, example events, how the track angle is measured, and the track
+directions for every source position.
 
 ## Documentation
 

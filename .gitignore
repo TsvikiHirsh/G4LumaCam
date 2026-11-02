@@ -66,3 +66,4 @@ notebooks/scripts/pubfigs
 
 # nanoguide notebook: simulation cache
 notebooks/nanoguide/archive/
+!notebooks/nanoguide/figures/
