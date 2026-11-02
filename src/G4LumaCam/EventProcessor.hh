@@ -2,6 +2,7 @@
 #define EVENT_PROCESSOR_HH
 #include "G4VSensitiveDetector.hh"
 #include "G4SystemOfUnits.hh"
+#include "G4ThreeVector.hh"
 #include <vector>
 #include <map>
 #include <fstream>
@@ -28,6 +29,7 @@ private:
         G4double nx0, ny0, nz0;  // neutron: entry point into the scintillator
         G4int pulseId;
         G4double pulseTime;
+        G4int nInt;  // interaction of the primary the light-emitting particle descends from
     };
 
     struct TrackData {
@@ -36,6 +38,7 @@ private:
         G4bool isLightProducer;
         // Store generation info for optical photons
         G4double x0, y0, z0, dx0, dy0, dz0;
+        G4int nInt = 0;  // see interactionIndex()
     };
 
     std::vector<PhotonRecord> photons;
@@ -43,6 +46,7 @@ private:
     G4double neutronPos[3], neutronEnergy, protonEnergy;
     G4double neutronEntry[3];  // where the primary neutron entered the scintillator
     G4bool neutronEntered;
+    std::vector<G4ThreeVector> primaryHits;  // interactions of the primary in the scintillator
     G4int neutronCount, batchCount, eventCount;
     std::ofstream dataFile;
     ParticleGenerator* particleGen;
@@ -50,6 +54,7 @@ private:
     G4double currentEventTriggerTime;
 
     void resetData();
+    G4int interactionIndex(const G4Track* track, G4int parentID);
     void addPhoton(const G4Track* track, G4int parentID,
                    G4double x0, G4double y0, G4double z0,
                    G4double dx0, G4double dy0, G4double dz0, G4double toa);

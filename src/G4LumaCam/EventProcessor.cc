@@ -27,6 +27,7 @@ void EventProcessor::Initialize(G4HCofThisEvent*) {
 void EventProcessor::resetData() {
     photons.clear();
     tracks.clear();
+    primaryHits.clear();
     neutronPos[0] = neutronPos[1] = neutronPos[2] = 0.;
     neutronEntry[0] = neutronEntry[1] = neutronEntry[2] = 0.;
     neutronEntered = false;
@@ -115,6 +116,13 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
         }
     }
 
+    // Interactions of the primary (neutron or gamma) in the scintillator, in order
+    if (parentID == 0 && preStep->GetPhysicalVolume()->GetName() == "ScintPhys"
+        && postStep->GetProcessDefinedStep()
+        && postStep->GetProcessDefinedStep()->GetProcessName() != "Transportation") {
+        primaryHits.push_back(postPos);
+    }
+
     // Track charged particles in scintillator
     if (volName == "ScintPhys" && particleName != "opticalphoton") {
         if (tracks.find(tid) == tracks.end()) {
@@ -125,6 +133,7 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             // x0/y0/z0 = birth position (frozen); x/y/z updated to last scintillation step.
             tracks[tid] = {particleName, prePos.x(), prePos.y(), prePos.z(), energy, false,
                            prePos.x(), prePos.y(), prePos.z(), 0., 0., 0.};
+            tracks[tid].nInt = interactionIndex(track, parentID);
         }
 
         G4String processName = postStep->GetProcessDefinedStep() ?
@@ -263,7 +272,25 @@ void EventProcessor::addPhoton(const G4Track* track, G4int parentID,
     rec.neutronEnergy = neutronEnergy;
     rec.pulseId = particleGen ? particleGen->getCurrentPulseIndex() : -1;
     rec.pulseTime = currentEventTriggerTime;
+    rec.nInt = tracks[parentID].nInt;
     photons.push_back(rec);
+}
+
+// n_int: which interaction of the primary in the scintillator (1 = the first) a track
+// descends from. A particle made by the primary is matched to the interaction at its
+// vertex; any other inherits its parent's number, plus one after a neutral parent (a
+// neutron or gamma that interacts again elsewhere). 0: not traced back to the primary.
+G4int EventProcessor::interactionIndex(const G4Track* track, G4int parentID) {
+    if (parentID == 1) {
+        for (size_t i = 0; i < primaryHits.size(); i++) {
+            if ((primaryHits[i] - track->GetVertexPosition()).mag() < 1 * nm) return i + 1;
+        }
+        return 0;
+    }
+    auto parent = tracks.find(parentID);
+    if (parent == tracks.end() || parent->second.nInt == 0) return 0;
+    G4bool neutral = parent->second.type == "neutron" || parent->second.type == "gamma";
+    return parent->second.nInt + (neutral ? 1 : 0);
 }
 
 void EventProcessor::EndOfEvent(G4HCofThisEvent*) {
@@ -333,7 +360,7 @@ void EventProcessor::openOutputFile() {
              << "x,y,z,dx,dy,dz,"   // photon birth pos+dir (Python traces from here)
              << "toa,wavelength,"
              << "parentName,px,py,pz,parentEnergy,"  // px/py/pz = parent birth pos
-             << "nx,ny,nz,neutronEnergy,nx0,ny0,nz0\n";
+             << "nx,ny,nz,neutronEnergy,nx0,ny0,nz0,n_int\n";
 }
 
 void EventProcessor::writeData() {
@@ -368,7 +395,7 @@ void EventProcessor::writeData() {
                  << p.nx << "," << p.ny << "," << p.nz << ",";
 
         dataFile << std::setprecision(4) << p.neutronEnergy << ","
-                 << p.nx0 << "," << p.ny0 << "," << p.nz0 << "\n";
+                 << p.nx0 << "," << p.ny0 << "," << p.nz0 << "," << p.nInt << "\n";
     }
     dataFile.flush();
 }

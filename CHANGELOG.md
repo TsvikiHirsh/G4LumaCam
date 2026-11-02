@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   neutrons from the Geant4 AmBe spectrum or the 4.44 MeV gamma line, optionally
   spread in time at the source rate. `Config` gains `pos_type` ("Point"),
   `min_phi`/`max_phi` and point-wise ("Arb") energy spectra.
+- **Interaction index** (SimPhotons column `n_int`, last): which interaction of the
+  primary particle in the scintillator the light-emitting particle descends from
+  (1 = the first, 2+ = after a scatter, 0 = not traced back).
 - **`lumacam.nanoguide`**: source geometry (`source_window`), light clusters per
   event (`light_clusters`) and their pairwise separations and time differences
   (`cluster_pairs`), and the microscope focus on the end face (`MICROSCOPE_ZFINE`).

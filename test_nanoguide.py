@@ -77,10 +77,10 @@ def test_clusters_and_pairs():
                                  y=y + rng.normal(0, 0.05, n), toa=t + rng.exponential(3, n)))
 
     df = pd.concat([
-        photons(0, 2, 'proton', -4.5, 0.0, 200, 10.0, e=3.0),  # first n-p scatter
-        photons(0, 7, 'e-', -4.2, 0.1, 30, 10.0, e=0.01),      # its delta electron
-        photons(0, 3, 'proton', 4.5, 0.0, 120, 10.4, e=1.0),   # second n-p scatter, 9 mm away
-        photons(1, 2, 'proton', 1.0, 1.0, 5, 50.0),            # dim single recoil
+        photons(0, 2, 'proton', -4.5, 0.0, 200, 10.0, e=3.0).assign(n_int=1),  # first n-p scatter
+        photons(0, 7, 'e-', -4.2, 0.1, 30, 10.0, e=0.01).assign(n_int=1),      # its delta electron
+        photons(0, 3, 'proton', 4.5, 0.0, 120, 10.4, e=1.0).assign(n_int=2),   # second scatter, 9 mm away
+        photons(1, 2, 'proton', 1.0, 1.0, 5, 50.0).assign(n_int=1),            # dim single recoil
     ], ignore_index=True)
     cl = light_clusters(df, merge=1.0, min_photons=10)
     assert sorted(cl.groupby('neutron_id').size().to_dict().items()) == [(0, 2)]
@@ -90,6 +90,9 @@ def test_clusters_and_pairs():
     assert len(pr) == 1
     assert pr.distance.iloc[0] == pytest.approx(9.0, abs=0.05)
     assert pr.dt.iloc[0] == pytest.approx(0.4, abs=0.2)
+    assert (pr.n_int_1.iloc[0], pr.n_int_2.iloc[0]) == (1, 2)
+    # without the truth column the tables simply lack it
+    assert 'n_int' not in light_clusters(df.drop(columns='n_int')).columns
 
 
 @pytest.mark.skipif(not os.path.exists(EXE), reason='build/lumacam not built')
@@ -103,6 +106,9 @@ def test_geant4_end_face(tmp_path):
     assert (df.z == 0).all()
     assert df.x.abs().max() <= 5 and df.y.abs().max() <= 5
     assert np.hypot(df.dx, df.dy).max() <= NA + 1e-4
+    # light comes mostly from the neutron's first interaction, always traced back
+    protons = df[df.parentName == 'proton']
+    assert (protons.n_int >= 1).all() and (protons.n_int == 1).mean() > 0.8
     # photons arrive after their trip along the fibre
     assert ((df.toa - df.pulse_time_ns) > (100 - df.pz) * 1.58 / 299.792458).all()
     # recoil protons point away from the source (azimuth 30 deg -> 210 deg)

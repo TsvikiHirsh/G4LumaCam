@@ -119,13 +119,19 @@ def light_clusters(df: pd.DataFrame, merge: float = 1.0, min_photons: int = 1) -
         One row per cluster: neutron_id, cluster, x, y (photon centroid, mm), n_photons,
         t (earliest photon, ns), particles (emitting particle types, '+'-joined),
         energy (largest emitting-particle energy, MeV), px, py, pz (birth of that
-        particle, mm).
+        particle, mm) and, when the photons carry it, n_int (the interaction of the
+        primary that particle descends from: 1 = the first, 2+ = after a scatter).
     """
+    agg = dict(particle=("parentName", "first"), energy=("parentEnergy", "first"),
+               px=("px", "first"), py=("py", "first"), pz=("pz", "first"),
+               x=("x", "mean"), y=("y", "mean"), n_photons=("x", "size"),
+               t=("toa", "min"))
+    lead_cols = ["energy", "px", "py", "pz"]
+    if "n_int" in df.columns:
+        agg["n_int"] = ("n_int", "first")
+        lead_cols.append("n_int")
     parents = (df.groupby(["neutron_id", "parent_id"], sort=True)
-                 .agg(particle=("parentName", "first"), energy=("parentEnergy", "first"),
-                      px=("px", "first"), py=("py", "first"), pz=("pz", "first"),
-                      x=("x", "mean"), y=("y", "mean"), n_photons=("x", "size"),
-                      t=("toa", "min"))
+                 .agg(**agg)
                  .reset_index())
     labels = np.zeros(len(parents), dtype=int)
     nid = parents["neutron_id"].to_numpy()
@@ -149,10 +155,11 @@ def light_clusters(df: pd.DataFrame, merge: float = 1.0, min_photons: int = 1) -
                      particles=("particle", lambda p: "+".join(sorted(set(p)))))
     clusters["x"] = clusters.pop("wx") / clusters["n_photons"]
     clusters["y"] = clusters.pop("wy") / clusters["n_photons"]
-    lead = parents.loc[g["energy"].idxmax().to_numpy(), ["energy", "px", "py", "pz"]]
-    clusters[["energy", "px", "py", "pz"]] = lead.to_numpy()
+    lead = parents.loc[g["energy"].idxmax().to_numpy(), lead_cols]
+    for c in lead_cols:
+        clusters[c] = lead[c].to_numpy()
     clusters = clusters.reset_index()[["neutron_id", "cluster", "x", "y", "n_photons", "t",
-                                       "particles", "energy", "px", "py", "pz"]]
+                                       "particles"] + lead_cols]
     return clusters[clusters["n_photons"] >= min_photons].reset_index(drop=True)
 
 
@@ -165,10 +172,15 @@ def cluster_pairs(clusters: pd.DataFrame) -> pd.DataFrame:
 
     Returns:
         One row per pair: neutron_id, distance (end-face separation, mm), dt (time
-        difference of the earliest photons, ns), n_photons_1/2, particles_1/2 and
-        depth (z distance between the emitting particles' births, mm), the pair with
-        the brighter cluster first.
+        difference of the earliest photons, ns), n_photons_1/2, particles_1/2, depth
+        (z distance between the emitting particles' births, mm) and n_int_1/2 (when
+        the clusters carry it), the pair with the brighter cluster first.
     """
+    columns = ["neutron_id", "distance", "dt", "n_photons_1", "n_photons_2",
+               "particles_1", "particles_2", "depth"]
+    with_nint = "n_int" in clusters.columns
+    if with_nint:
+        columns += ["n_int_1", "n_int_2"]
     rows = []
     for nid, g in clusters.groupby("neutron_id"):
         if len(g) < 2:
@@ -177,13 +189,15 @@ def cluster_pairs(clusters: pd.DataFrame) -> pd.DataFrame:
         for i in range(len(g)):
             for j in range(i + 1, len(g)):
                 a, b = g.loc[i], g.loc[j]
-                rows.append({
+                row = {
                     "neutron_id": nid,
                     "distance": math.hypot(a["x"] - b["x"], a["y"] - b["y"]),
                     "dt": b["t"] - a["t"],
                     "n_photons_1": a["n_photons"], "n_photons_2": b["n_photons"],
                     "particles_1": a["particles"], "particles_2": b["particles"],
                     "depth": abs(a["pz"] - b["pz"]),
-                })
-    return pd.DataFrame(rows, columns=["neutron_id", "distance", "dt", "n_photons_1", "n_photons_2",
-                                       "particles_1", "particles_2", "depth"])
+                }
+                if with_nint:
+                    row["n_int_1"], row["n_int_2"] = a["n_int"], b["n_int"]
+                rows.append(row)
+    return pd.DataFrame(rows, columns=columns)
