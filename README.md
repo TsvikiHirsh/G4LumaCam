@@ -204,6 +204,8 @@ on the end face and at the camera, with the EMPIR settings of the nanoguide data
 A short companion, [`notebooks/nanoguide/ambe_tracks_overview.ipynb`](notebooks/nanoguide/ambe_tracks_overview.ipynb),
 shows the setup, example events, how the track angle is measured, and the track
 directions for every source position.
+[`notebooks/nanoguide/dt14_tracks.ipynb`](notebooks/nanoguide/dt14_tracks.ipynb) does the same for
+14 MeV neutrons, side-on and along the fibres: track lengths, example events and directions.
 
 ## Documentation
 
